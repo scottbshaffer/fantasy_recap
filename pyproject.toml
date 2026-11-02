@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fantasy-recap"
+version = "0.1.0"
+description = "Weekly story recaps for ESPN fantasy basketball leagues"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["espn-api>=0.45", "anthropic>=0.40", "python-dotenv>=1.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+fantasy-recap = "fantasy_recap.cli:main"
+
+[tool.setuptools]
+packages = ["fantasy_recap"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

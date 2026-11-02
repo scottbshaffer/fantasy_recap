@@ -1,0 +1,3 @@
+espn-api>=0.45
+anthropic>=0.40
+python-dotenv>=1.0
