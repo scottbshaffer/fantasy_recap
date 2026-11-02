@@ -1,0 +1,4 @@
+# Alternative to the systemd timer. Install with: crontab -e
+# Monday 9am Eastern: export last week's summary and push it.
+CRON_TZ=America/New_York
+0 9 * * 1 /home/scott/fantasy_recap/scripts/weekly-export.sh >> /home/scott/fantasy_recap-export.log 2>&1

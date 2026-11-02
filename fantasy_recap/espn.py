@@ -7,10 +7,18 @@ attributes, so tests can feed it simple fakes.
 
 from __future__ import annotations
 
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from .config import EspnConfig
+from .games import fetch_big_games
 from .models import Matchup, PlayerLine, TeamWeek, WeekSummary
+
+
+log = logging.getLogger(__name__)
 
 
 class EspnError(RuntimeError):
@@ -38,24 +46,66 @@ def connect(config: EspnConfig):
         raise EspnError(f"Couldn't load ESPN league {config.league_id} for {config.year}: {exc}.{hint}") from exc
 
 
-def fetch_week(config: EspnConfig, week: Optional[int] = None, league: Any = None) -> WeekSummary:
-    """Fetch the matchups for a matchup period (defaults to the current one)."""
+def fetch_week(
+    config: EspnConfig,
+    week: Optional[int] = None,
+    league: Any = None,
+    previous: bool = False,
+    big_games: int = 10,
+) -> WeekSummary:
+    """Fetch the matchups for a matchup period.
+
+    Defaults to the current week; `previous=True` picks the week before it, which
+    is the one that just finished when run on a Monday. `big_games` is how many
+    top single-game performances to include (0 to skip; it costs one ESPN request
+    per day of the week).
+    """
     league = league or connect(config)
     current = getattr(league, "currentMatchupPeriod", None)
     if week is None:
         week = current
+        if previous and current is not None:
+            week = current - 1
     elif current is not None and week > current:
         raise EspnError(f"Week {week} hasn't started yet (the league is on week {current}).")
+    if week is None or week < 1:
+        raise EspnError("There's no finished week to recap yet.")
 
     box_scores = league.box_scores(matchup_period=week, matchup_total=True)
     settings = getattr(league, "settings", None)
-    return summarize_box_scores(
+    summary = summarize_box_scores(
         box_scores,
         league_name=getattr(settings, "name", None) or f"League {config.league_id}",
         season=config.year,
         week=week,
         scoring_type=getattr(settings, "scoring_type", None),
     )
+    if big_games:
+        try:
+            summary.big_games = fetch_big_games(
+                league, week, use_fantasy_points=summary.scoring == "points", limit=big_games
+            )
+        except Exception as exc:  # a missing extra shouldn't sink the recap
+            log.warning("Couldn't load single-game performances: %s", exc)
+    return summary
+
+
+def export_path(summary: WeekSummary, directory: Path) -> Path:
+    return Path(directory) / f"{summary.season}-week-{summary.week:02d}.json"
+
+
+def export_summary(summary: WeekSummary, directory: Path = Path("summaries")) -> Path:
+    """Write the week's structured summary as JSON and return the file path."""
+    path = export_path(summary, directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = summary.to_dict()
+    data["status"] = (
+        "final" if summary.real_matchups and all(m.status == "final" for m in summary.real_matchups)
+        else "in_progress"
+    )
+    data["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def _scoring_kind(scoring_type: Optional[str], box_scores: list) -> str:

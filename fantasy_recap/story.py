@@ -20,6 +20,8 @@ Rules:
 - Use only the facts in the data you are given. Never invent players, stats, injuries, trades or quotes.
 - Cover every matchup at least briefly. Spend the most words on the closest game and the biggest blowout.
 - Name the week's top player, and needle a manager who left big points on the bench if the data shows one.
+- "big_games" lists the best single-game box scores of the week. Work in the best one or two, with their \
+stat lines, and call out any that were wasted on a fantasy bench (started is false).
 - If a matchup's status is "in_progress", describe who is leading rather than who won.
 - In a category league, talk about category records (for example 6-3) and which categories swung it, not points.
 - Keep it under about 300 words."""
@@ -87,6 +89,10 @@ def _score_line(m: Matchup) -> str:
     return f"{leader.name} {verb} {trailer.name} {_fmt(leader.score)} to {_fmt(trailer.score)}"
 
 
+def _poss(name: str) -> str:
+    return f"{name}'" if name.endswith("s") else f"{name}'s"
+
+
 def _join(items: list[str]) -> str:
     items = list(items)
     if len(items) <= 2:
@@ -151,9 +157,21 @@ def template_story(summary: WeekSummary) -> str:
 
     # Paragraph 3: individual notes.
     notes: list[str] = []
-    if scoring == "points" and summary.top_player and summary.top_player[0].points > 0:
+    best = summary.big_games[0] if summary.big_games else None
+    if best:
+        extra = f" ({_join(best.notes)})" if best.notes else ""
+        vs = f" against {best.opponent}" if best.opponent else ""
+        where = f"for {best.fantasy_team}" if best.started else f"on {_poss(best.fantasy_team)} bench, sadly"
+        notes.append(f"The game of the week belonged to {best.player}, who went for {best.line()}{extra}{vs} {where}.")
+        wasted = next((g for g in summary.big_games[1:5] if not g.started), None)
+        if wasted and best.started:
+            notes.append(f"{_poss(wasted.player)} {wasted.line()} night was wasted on {_poss(wasted.fantasy_team)} bench.")
+    elif scoring == "points" and summary.top_player and summary.top_player[0].points > 0:
         p, t = summary.top_player
         notes.append(f"The top individual line belonged to {p.name}, who put up {_fmt(p.points)} for {t.name}.")
+    if best and scoring == "points" and summary.top_player and summary.top_player[0].points > 0:
+        p, t = summary.top_player
+        notes.append(f"Over the whole week, {p.name} led everyone with {_fmt(p.points)} fantasy points for {t.name}.")
     if summary.scoring == "points" and summary.high_score_team:
         t = summary.high_score_team
         notes.append(f"{t.name} posted the week's high score with {_fmt(t.score)}.")

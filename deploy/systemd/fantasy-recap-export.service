@@ -1,0 +1,11 @@
+[Unit]
+Description=Export the fantasy basketball weekly summary and push it to GitHub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Change these to your user and clone location.
+User=scott
+WorkingDirectory=/home/scott/fantasy_recap
+ExecStart=/home/scott/fantasy_recap/scripts/weekly-export.sh

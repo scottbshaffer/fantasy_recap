@@ -24,6 +24,54 @@ class PlayerLine:
 
 
 @dataclass
+class BigGame:
+    """One player's single-game box score from the week."""
+
+    player: str
+    fantasy_team: str
+    started: bool  # in an active lineup slot that day (False = bench or IR)
+    slot: str
+    scoring_period: int
+    game_score: float  # fantasy points in points leagues, a standard game score otherwise
+    stats: dict = field(default_factory=dict)  # PTS, REB, AST, STL, BLK, 3PM, TO, FGM, FGA, MIN...
+    fantasy_points: Optional[float] = None
+    pro_team: str = ""
+    opponent: str = ""
+    date: str = ""  # YYYY-MM-DD, US Eastern
+    notes: list[str] = field(default_factory=list)  # e.g. "triple-double", "40-point game"
+
+    def line(self) -> str:
+        """Short box score line, e.g. '42 pts, 12 reb, 10 ast'."""
+        parts = []
+        for key, label in (("PTS", "pts"), ("REB", "reb"), ("AST", "ast"), ("STL", "stl"),
+                           ("BLK", "blk"), ("3PM", "3pm")):
+            value = self.stats.get(key)
+            if value is None:
+                continue
+            if key in ("PTS", "REB", "AST") or value >= 3:
+                parts.append(f"{int(value)} {label}")
+        return ", ".join(parts)
+
+    def to_dict(self) -> dict:
+        d = {
+            "player": self.player,
+            "fantasy_team": self.fantasy_team,
+            "started": self.started,
+            "slot": self.slot,
+            "date": self.date,
+            "pro_team": self.pro_team,
+            "opponent": self.opponent,
+            "box_score": self.line(),
+            "stats": self.stats,
+            "game_score": self.game_score,
+            "notes": self.notes,
+        }
+        if self.fantasy_points is not None:
+            d["fantasy_points"] = self.fantasy_points
+        return {k: v for k, v in d.items() if v not in ("", None)}
+
+
+@dataclass
 class TeamWeek:
     name: str
     abbrev: str = ""
@@ -98,6 +146,7 @@ class WeekSummary:
     week: int  # ESPN matchup period
     scoring: str  # "points" or "categories"
     matchups: list[Matchup] = field(default_factory=list)
+    big_games: list[BigGame] = field(default_factory=list)  # best single games, best first
 
     @property
     def real_matchups(self) -> list[Matchup]:
@@ -205,7 +254,7 @@ class WeekSummary:
             t = self.most_bench_points
             highlights["most_points_left_on_bench"] = {"team": t.name, "points": t.bench_points}
 
-        return {
+        result = {
             "league": self.league_name,
             "season": self.season,
             "week": self.week,
@@ -213,10 +262,13 @@ class WeekSummary:
             "matchups": matchups,
             "highlights": highlights,
         }
+        if self.big_games:
+            result["big_games"] = [g.to_dict() for g in self.big_games]
+        return result
 
 
 def _pair(m: Matchup) -> dict:
     return {"teams": [m.home.name, m.away.name], "margin": m.margin}
 
 
-__all__ = ["PlayerLine", "TeamWeek", "Matchup", "WeekSummary", "asdict"]
+__all__ = ["BigGame", "PlayerLine", "TeamWeek", "Matchup", "WeekSummary", "asdict"]

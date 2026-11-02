@@ -55,9 +55,15 @@ python -m fantasy_recap --no-ai
 
 # See the structured data the story is written from
 python -m fantasy_recap --week 3 --json
+
+# Last week's matchups (handy on a Monday, once ESPN has rolled over)
+python -m fantasy_recap --previous
+
+# Write the summary to summaries/<season>-week-<NN>.json instead of a story
+python -m fantasy_recap --previous --export
 ```
 
-Other flags: `--league-id` and `--year` override the env vars, and `--model` picks a different Claude model. If you `pip install -e .`, the same thing runs as `fantasy-recap`.
+Other flags: `--league-id` and `--year` override the env vars, `--model` picks a different Claude model, and `--big-games N` sets how many standout single games to include (default 10, `0` to skip). If you `pip install -e .`, the same thing runs as `fantasy-recap`.
 
 "Week" means ESPN's matchup period, the number shown on your league's scoreboard. Running it mid-week gives a "so far" story about who's leading.
 
@@ -71,7 +77,27 @@ For each matchup the tool pulls:
 - categories won and lost (category leagues)
 - whether the matchup is final or still going
 
+It also goes through each day of the week and pulls every rostered player's single-game box score, keeping the best games (by fantasy points in points leagues, or a standard game score in category leagues). Each one notes the fantasy team, whether the player was started or sat on the bench, the stat line and milestones like a triple-double or a 40-point game.
+
 It then picks out league highlights: the closest game, the biggest blowout, the high score, the top player and the most points left on the bench. That summary goes to Claude with instructions to write two or three paragraphs and use only those facts. Head to head points and category leagues are both supported.
+
+## Weekly story without an API key
+
+If you'd rather not pay for an Anthropic key, your server can export each week's summary to this repo, and Claude (in the Claude app) can write the story from it on a schedule.
+
+1. Clone the repo on your server, set up the virtualenv and `.env` as above, and make sure `git push` works from there (an SSH deploy key with write access is the simplest).
+2. Test it once: `./scripts/weekly-export.sh`. It pulls, runs `python -m fantasy_recap --previous --export summaries`, and commits and pushes the new file.
+3. Schedule it for Monday at 9am Eastern, after the fantasy week ends Sunday night. With systemd, edit the user and paths in `deploy/systemd/` and run:
+
+   ```bash
+   sudo cp deploy/systemd/fantasy-recap-export.* /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now fantasy-recap-export.timer
+   ```
+
+   Or use cron with `deploy/crontab.example`.
+
+Each week lands at `summaries/<season>-week-<NN>.json`, for example `summaries/2027-week-03.json`. `summaries/README.md` describes what's in it. To redo a specific week, run `EXPORT_ARGS="--week 3" ./scripts/weekly-export.sh`.
 
 ## Development
 
@@ -85,6 +111,7 @@ The tests use fake ESPN data and a fake Claude client, so they need no network o
 Layout:
 
 - `fantasy_recap/espn.py` reads the league with the [espn-api](https://github.com/cwendt94/espn-api) package and turns box scores into a `WeekSummary`
+- `fantasy_recap/games.py` finds the week's biggest single-game performances
 - `fantasy_recap/models.py` holds the summary data classes and the highlight logic
 - `fantasy_recap/story.py` has the Claude prompt and the template fallback
 - `fantasy_recap/cli.py` is the command line tool
