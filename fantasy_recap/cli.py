@@ -11,7 +11,7 @@ from typing import Optional, Sequence
 
 from .config import EspnConfig, StoryConfig, load_dotenv_if_present
 from .espn import EspnError, export_summary, fetch_week
-from .story import write_story
+from .story import parse_story, team_of_the_week, write_story
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,11 +34,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--big-games", type=int, default=10, metavar="N",
                    help="how many top single-game player performances to include (0 to skip; default 10)")
     p.add_argument("--out", type=Path, help="also write the output to this file")
+    p.add_argument("--pdf", type=Path, metavar="FILE",
+                   help="also render the recap as a one-page, phone-sized PDF at FILE")
+    p.add_argument("--team-colors", type=Path, metavar="FILE",
+                   help='JSON file of PDF team colors, keyed by team name or ESPN team id, e.g. {"The Haliban": "#e63946"}')
+    p.add_argument("--no-logos", action="store_true", help="use colored initials instead of ESPN team logos in the PDF")
     return p
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.pdf and (args.json or args.export):
+        parser.error("--pdf renders the story, so it can't be combined with --json or --export")
     logging.basicConfig(level=logging.WARNING, format="note: %(message)s")
     load_dotenv_if_present()
 
@@ -53,6 +61,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(export_summary(summary, args.export))
         return 0
 
+    story = None
     if args.json:
         output = json.dumps(summary.to_dict(), indent=2)
     else:
@@ -60,13 +69,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not args.no_ai and not story_config.api_key:
             print("note: ANTHROPIC_API_KEY isn't set, using the template story.", file=sys.stderr)
         try:
-            output = write_story(summary, story_config, use_ai=not args.no_ai)
+            story = write_story(summary, story_config, use_ai=not args.no_ai, include_award=False)
         except Exception as exc:  # API errors shouldn't leave the user with nothing
             print(f"note: Claude couldn't write the story ({exc}); using the template.", file=sys.stderr)
-            output = write_story(summary, story_config, use_ai=False)
+            story = write_story(summary, story_config, use_ai=False, include_award=False)
+        award = team_of_the_week(summary)
+        plain = parse_story(story).plain()
+        output = f"{award}\n\n{plain}" if award else plain
 
     print(output)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(output + "\n", encoding="utf-8")
+    if args.pdf:
+        # Imported lazily so the plain-text and export paths work without reportlab installed.
+        from .pdf import fetch_logos, load_team_colors, render_pdf
+
+        try:
+            colors = load_team_colors(args.team_colors) if args.team_colors else None
+        except (OSError, ValueError) as exc:
+            print(f"error: couldn't read --team-colors: {exc}", file=sys.stderr)
+            return 2
+        logos = None if args.no_logos else fetch_logos(summary, espn_config)
+        path = render_pdf(summary, story, args.pdf, team_colors=colors, logos=logos)
+        print(f"wrote {path}", file=sys.stderr)
     return 0

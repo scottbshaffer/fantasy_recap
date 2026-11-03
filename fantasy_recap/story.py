@@ -7,24 +7,86 @@ summary. Without one (or with --no-ai) a plain template story is used.
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .config import StoryConfig
 from .models import Matchup, TeamWeek, WeekSummary
 
-SYSTEM_PROMPT = """You write weekly recaps for a fantasy basketball league, in the voice of a sharp, \
-playful sports columnist writing for the league's group chat.
+SYSTEM_PROMPT = """You write weekly recaps for a fantasy basketball league, in the voice of a trash-talking \
+sports columnist writing for the league's group chat. The goal is to make the managers laugh.
+
+Tone:
+- Be genuinely funny, not just upbeat. Use roasts, absurd comparisons, mock-serious drama and dry asides. \
+Every paragraph should have at least one real joke.
+- Roast losing teams, ugly stat lines and bad lineup decisions. Hype the winners like they just won a title. \
+Team names are fair game for jokes.
+- Keep it good-natured: mock the teams and decisions, never the managers' personal lives.
 
 Rules:
-- Write exactly two or three paragraphs of plain prose. No headings, no bullet points, no markdown, no title.
-- Use only the facts in the data you are given. Never invent players, stats, injuries, trades or quotes.
+- Write three or four paragraphs of plain prose. No bullet points, no title, and no markdown except the \
+headline lines below.
+- Put a short, punchy headline (two to six words) on its own line above each paragraph, written as \
+"## Headline".
+- After the last paragraph, add one final line: "Pull quote: " followed by the single funniest sentence \
+from your recap, copied word for word.
+- Write every team name exactly as it appears in the data, including its spelling and capitalization.
+- Use only the facts in the data you are given. Never invent players, stats, injuries, trades or quotes. \
+Jokes and comparisons are fine as long as they don't pass off made-up facts as real.
+- The recap is printed under a "Team of the Week" award line naming the highest scoring team \
+("high_score_team" in highlights). Don't repeat that award or open with it; mention the team where its \
+matchup comes up. No royalty or "champion of the universe" style hype for anyone.
 - Cover every matchup at least briefly. Spend the most words on the closest game and the biggest blowout.
 - Name the week's top player, and needle a manager who left big points on the bench if the data shows one.
 - "big_games" lists the best single-game box scores of the week. Work in the best one or two, with their \
 stat lines, and call out any that were wasted on a fantasy bench (started is false).
 - If a matchup's status is "in_progress", describe who is leading rather than who won.
 - In a category league, talk about category records (for example 6-3) and which categories swung it, not points.
-- Keep it under about 300 words."""
+- Keep it under about 400 words."""
+
+
+@dataclass
+class StoryParts:
+    """A recap split into (headline, paragraph) sections plus an optional pull quote."""
+
+    sections: list[tuple[str, str]] = field(default_factory=list)  # headline may be ""
+    pull_quote: str = ""
+
+    def plain(self) -> str:
+        """The recap as plain text for the terminal and group chat (headlines kept, quote dropped)."""
+        return "\n\n".join(f"{h}\n{p}" if h else p for h, p in self.sections)
+
+
+_QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019 "
+
+
+def parse_story(text: str) -> StoryParts:
+    """Split a recap written with '## Headline' lines and a trailing 'Pull quote:' line."""
+    parts = StoryParts()
+    headline, para = "", []
+
+    def flush():
+        nonlocal headline, para
+        if para:
+            parts.sections.append((headline, " ".join(para)))
+            headline, para = "", []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        quote = re.match(r"(?i)^\**pull quote\**\s*:\s*(.+)$", line)
+        if quote:
+            flush()
+            parts.pull_quote = quote.group(1).strip(_QUOTE_CHARS + "*")
+        elif line.startswith("#"):
+            flush()
+            headline = line.lstrip("#").strip().strip("*")
+        elif not line:
+            flush()
+        else:
+            para.append(line)
+    flush()
+    return parts
 
 
 def build_prompt(summary: WeekSummary) -> str:
@@ -40,6 +102,7 @@ def write_story(
     config: Optional[StoryConfig] = None,
     use_ai: bool = True,
     client: Any = None,
+    include_award: bool = True,
 ) -> str:
     """Return the recap text. Falls back to the template when AI isn't available."""
     if not summary.matchups:
@@ -47,8 +110,21 @@ def write_story(
 
     config = config or StoryConfig.from_env()
     if use_ai and (client is not None or config.api_key):
-        return ai_story(summary, config, client=client)
-    return template_story(summary)
+        story = ai_story(summary, config, client=client)
+    else:
+        story = template_story(summary)
+    award = team_of_the_week(summary) if include_award else ""
+    return f"{award}\n\n{story}" if award else story
+
+
+def team_of_the_week(summary: WeekSummary) -> str:
+    """Award line for the top-scoring team, or "" when there's no meaningful score yet."""
+    team = summary.high_score_team
+    if summary.scoring != "points" or team is None or team.score <= 0:
+        return ""
+    score = f"{team.score:,.0f}" if float(team.score).is_integer() else f"{team.score:,.1f}"
+    so_far = "" if all(m.status == "final" for m in summary.real_matchups) else " (so far)"
+    return f"Team of the Week{so_far}: {team.name} ({score})"
 
 
 def ai_story(summary: WeekSummary, config: StoryConfig, client: Any = None) -> str:
@@ -58,11 +134,14 @@ def ai_story(summary: WeekSummary, config: StoryConfig, client: Any = None) -> s
         client = anthropic.Anthropic(api_key=config.api_key)
     response = client.messages.create(
         model=config.model,
-        max_tokens=1200,
+        # Thinking tokens count against max_tokens, so this must leave room beyond the ~400-word story.
+        max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": build_prompt(summary)}],
     )
-    text = "".join(getattr(block, "text", "") for block in response.content).strip()
+    if response.stop_reason == "max_tokens":
+        raise RuntimeError("The model hit max_tokens before finishing the story.")
+    text = "".join(block.text for block in response.content if block.type == "text").strip()
     if not text:
         raise RuntimeError("The model returned an empty story.")
     return text
@@ -135,7 +214,7 @@ def template_story(summary: WeekSummary) -> str:
         tail = "and it was never really close" if blowout.status == "final" else "and it hasn't been close"
         first.append(f"On the other end of the spectrum, {_score_line(blowout)}, {tail}.")
     if first:
-        paragraphs.append(" ".join(first))
+        paragraphs.append(("## Down to the wire\n" if final else "## Still anybody's game\n") + " ".join(first))
 
     # Paragraph 2: the rest of the slate.
     rest = [m for m in games if m is not close and m is not blowout]
@@ -146,14 +225,14 @@ def template_story(summary: WeekSummary) -> str:
             if m.leader and _star(m.leader, scoring):
                 line += f", behind {_star(m.leader, scoring)}"
             lines.append(line)
-        paragraphs.append("Around the league, " + "; ".join(lines) + ".")
+        paragraphs.append("## Around the league\nElsewhere, " + "; ".join(lines) + ".")
     byes = [m.home.name for m in summary.matchups if m.is_bye]
     if byes:
         bye_line = f"{', '.join(byes)} had the week off."
         if rest:
             paragraphs[-1] += " " + bye_line
         else:
-            paragraphs.append(bye_line)
+            paragraphs.append("## Day off\n" + bye_line)
 
     # Paragraph 3: individual notes.
     notes: list[str] = []
@@ -172,9 +251,6 @@ def template_story(summary: WeekSummary) -> str:
     if best and scoring == "points" and summary.top_player and summary.top_player[0].points > 0:
         p, t = summary.top_player
         notes.append(f"Over the whole week, {p.name} led everyone with {_fmt(p.points)} fantasy points for {t.name}.")
-    if summary.scoring == "points" and summary.high_score_team:
-        t = summary.high_score_team
-        notes.append(f"{t.name} posted the week's high score with {_fmt(t.score)}.")
     if summary.scoring == "points" and summary.most_bench_points:
         t = summary.most_bench_points
         bench_top = t.top_bench_player
@@ -185,6 +261,6 @@ def template_story(summary: WeekSummary) -> str:
             extra = f", including {_fmt(bench_top.points)} from {bench_top.name}"
         notes.append(f"Meanwhile {t.name} left {_fmt(t.bench_points)} points on the bench{extra}. Ouch.")
     if notes:
-        paragraphs.append(" ".join(notes))
+        paragraphs.append("## Stars and scrubs\n" + " ".join(notes))
 
-    return "\n\n".join(paragraphs[:3])
+    return "\n\n".join(paragraphs[:4])

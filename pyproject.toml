@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Weekly story recaps for ESPN fantasy basketball leagues"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["espn-api>=0.45", "anthropic>=0.40", "python-dotenv>=1.0"]
+dependencies = ["espn-api>=0.45", "anthropic>=0.40", "python-dotenv>=1.0", "reportlab>=4.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -18,6 +18,9 @@ fantasy-recap = "fantasy_recap.cli:main"
 
 [tool.setuptools]
 packages = ["fantasy_recap"]
+
+[tool.setuptools.package-data]
+fantasy_recap = ["fonts/*.ttf", "fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

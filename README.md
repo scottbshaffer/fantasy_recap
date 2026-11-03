@@ -50,6 +50,13 @@ python -m fantasy_recap
 # A specific matchup week, saved to a file too
 python -m fantasy_recap --week 3 --out recaps/week3.txt
 
+# Also make a one-page, phone-sized PDF (Team of the Week, stat tiles, scoreboard, recap,
+# Game of the Week and standings) to share in a group chat
+python -m fantasy_recap --previous --pdf recaps/week3.pdf
+
+# Pick your own team colors (keys are team names or ESPN team ids), or skip ESPN logos
+python -m fantasy_recap --previous --pdf recaps/week3.pdf --team-colors colors.json --no-logos
+
 # Skip Claude and use the template story
 python -m fantasy_recap --no-ai
 

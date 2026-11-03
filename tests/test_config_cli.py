@@ -95,3 +95,26 @@ def test_cli_export(monkeypatch, tmp_path, capsys, points_box_scores):
 def test_cli_week_and_previous_conflict():
     with pytest.raises(SystemExit):
         cli.main(["--week", "2", "--previous"])
+
+
+def test_cli_pdf(monkeypatch, tmp_path, capsys, points_box_scores):
+    import re
+
+    monkeypatch.setenv("ESPN_LEAGUE_ID", "1")
+    monkeypatch.setattr(cli, "fetch_week", lambda c, week=None, previous=False, big_games=10: summarize_box_scores(
+        points_box_scores, "Test League", 2027, 3, "H2H_POINTS"))
+    pdf = tmp_path / "out" / "week3.pdf"
+    assert cli.main(["--pdf", str(pdf)]) == 0
+    printed = capsys.readouterr()
+    assert printed.out.startswith("Team of the Week: Hoop Dreams")
+    assert f"wrote {pdf}" in printed.err
+    data = pdf.read_bytes()
+    assert data.startswith(b"%PDF")
+    assert len(re.findall(rb"/Type\s*/Page(?!s)", data)) == 1
+
+
+def test_cli_pdf_rejects_json(monkeypatch, capsys):
+    monkeypatch.setenv("ESPN_LEAGUE_ID", "1")
+    with pytest.raises(SystemExit):
+        cli.main(["--json", "--pdf", "x.pdf"])
+    assert "--pdf" in capsys.readouterr().err

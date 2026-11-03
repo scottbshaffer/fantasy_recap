@@ -75,7 +75,14 @@ class BigGame:
 class TeamWeek:
     name: str
     abbrev: str = ""
-    record: str = ""  # season record going into / during the week, e.g. "3-1-0"
+    record: str = ""  # season record through this week, e.g. "3-1-0"
+    team_id: Optional[int] = None
+    logo_url: str = ""
+    wins: int = 0  # season totals through this week
+    losses: int = 0
+    ties: int = 0
+    points_for: float = 0.0
+    prev_record: Optional[tuple[int, int, int, float]] = None  # (wins, losses, ties, points for) before this week
     score: float = 0.0  # points (points leagues) or category wins (category leagues)
     projected: Optional[float] = None
     category_record: Optional[str] = None  # "6-3-0" in category leagues
@@ -83,6 +90,18 @@ class TeamWeek:
     categories_lost: list[str] = field(default_factory=list)
     starters: list[PlayerLine] = field(default_factory=list)
     bench: list[PlayerLine] = field(default_factory=list)
+
+    @property
+    def key(self):
+        """Stable identity for this team across weeks (ESPN team id, else the name)."""
+        return self.team_id if self.team_id is not None else self.name
+
+    @property
+    def short_record(self) -> str:
+        """'2-0', or '2-0-1' when there are ties; '' when unknown."""
+        if not self.record:
+            return ""
+        return f"{self.wins}-{self.losses}" + (f"-{self.ties}" if self.ties else "")
 
     @property
     def bench_points(self) -> float:
@@ -130,6 +149,23 @@ class Matchup:
         return self.away if leader is self.home else self.home
 
     @property
+    def is_upset(self) -> bool:
+        """A finished game won by the team with the worse record going into the week."""
+        if self.status != "final" or self.leader is None:
+            return False
+        before = [t.prev_record for t in (self.leader, self.trailer)]
+        if any(r is None or sum(r[:3]) == 0 for r in before):
+            return False
+        return _win_pct(before[0]) < _win_pct(before[1])
+
+    @property
+    def bench_cost_it(self) -> bool:
+        """The loser's bench outscored the margin (points leagues only)."""
+        if self.scoring != "points" or self.status != "final" or self.trailer is None:
+            return False
+        return self.trailer.bench_points > self.margin
+
+    @property
     def is_close(self) -> bool:
         if self.away is None:
             return False
@@ -137,6 +173,29 @@ class Matchup:
             return self.margin <= 1
         total = self.home.score + self.away.score
         return total > 0 and self.margin / total <= 0.03
+
+
+def _win_pct(rec: tuple) -> float:
+    wins, losses, ties = rec[:3]
+    games = wins + losses + ties
+    return (wins + ties / 2) / games if games else 0.0
+
+
+@dataclass
+class Standing:
+    team: TeamWeek
+    rank: int
+    prev_rank: Optional[int] = None  # None when there was no earlier week to compare with
+
+    @property
+    def movement(self) -> int:
+        """Places gained since last week (negative = dropped)."""
+        return 0 if self.prev_rank is None else self.prev_rank - self.rank
+
+
+def _rank(teams: list[TeamWeek], rec) -> dict:
+    ordered = sorted(teams, key=lambda t: (-_win_pct(rec(t)), -rec(t)[3], t.name.lower()))
+    return {id(t): i + 1 for i, t in enumerate(ordered)}
 
 
 @dataclass
@@ -161,6 +220,38 @@ class WeekSummary:
     def biggest_blowout(self) -> Optional[Matchup]:
         games = self.real_matchups
         return max(games, key=lambda m: m.margin) if games else None
+
+    @property
+    def teams(self) -> list[TeamWeek]:
+        return [t for m in self.matchups for t in (m.home, m.away) if t]
+
+    @property
+    def standings(self) -> list[Standing]:
+        """League table through this week, by win % then points for. Empty without records."""
+        teams = self.teams
+        if not teams or not any(t.record for t in teams):
+            return []
+        now = _rank(teams, lambda t: (t.wins, t.losses, t.ties, t.points_for))
+        before = None
+        if self.week > 1 and all(t.prev_record for t in teams):
+            before = _rank(teams, lambda t: t.prev_record)
+        rows = [Standing(t, now[id(t)], before[id(t)] if before else None) for t in teams]
+        return sorted(rows, key=lambda r: r.rank)
+
+    @property
+    def lowest_score_team(self) -> Optional[TeamWeek]:
+        teams = [t for m in self.real_matchups for t in (m.home, m.away)]
+        return min(teams, key=lambda t: t.score) if teams else None
+
+    @property
+    def worst_starter(self) -> Optional[tuple[PlayerLine, TeamWeek]]:
+        """The lowest-scoring player in an active lineup slot (points leagues)."""
+        worst = None
+        for team in self.teams:
+            for p in team.starters:
+                if worst is None or p.points < worst[0].points:
+                    worst = (p, team)
+        return worst
 
     @property
     def high_score_team(self) -> Optional[TeamWeek]:
@@ -237,6 +328,7 @@ class WeekSummary:
                     "leader": leader.name if leader else "tied",
                     "margin": m.margin,
                     "close_game": m.is_close,
+                    **({"upset": True} if m.is_upset else {}),
                 }
             )
 
@@ -246,13 +338,18 @@ class WeekSummary:
         if self.biggest_blowout:
             highlights["biggest_blowout"] = _pair(self.biggest_blowout)
         if self.high_score_team:
-            highlights["high_score_team"] = self.high_score_team.name
+            t = self.high_score_team
+            highlights["high_score_team"] = {"team": t.name, "score": t.score}
         if self.scoring == "points" and self.top_player:
             p, t = self.top_player
             highlights["top_player"] = {"name": p.name, "points": p.points, "team": t.name}
         if self.scoring == "points" and self.most_bench_points:
             t = self.most_bench_points
             highlights["most_points_left_on_bench"] = {"team": t.name, "points": t.bench_points}
+
+        upsets = [m.leader.name for m in self.real_matchups if m.is_upset]
+        if upsets:
+            highlights["upset_winners"] = upsets
 
         result = {
             "league": self.league_name,
@@ -262,6 +359,12 @@ class WeekSummary:
             "matchups": matchups,
             "highlights": highlights,
         }
+        if self.standings:
+            result["standings"] = [
+                {"rank": r.rank, "team": r.team.name, "record": r.team.record,
+                 **({"places_moved": r.movement} if r.prev_rank is not None else {})}
+                for r in self.standings
+            ]
         if self.big_games:
             result["big_games"] = [g.to_dict() for g in self.big_games]
         return result
@@ -271,4 +374,4 @@ def _pair(m: Matchup) -> dict:
     return {"teams": [m.home.name, m.away.name], "margin": m.margin}
 
 
-__all__ = ["BigGame", "PlayerLine", "TeamWeek", "Matchup", "WeekSummary", "asdict"]
+__all__ = ["BigGame", "PlayerLine", "TeamWeek", "Matchup", "Standing", "WeekSummary", "asdict"]

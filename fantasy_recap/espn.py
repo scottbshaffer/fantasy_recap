@@ -80,6 +80,10 @@ def fetch_week(
         week=week,
         scoring_type=getattr(settings, "scoring_type", None),
     )
+    try:
+        apply_records(summary, league.espn_request.league_get(params={"view": "mMatchup"})["schedule"])
+    except Exception as exc:  # fall back to the records ESPN reports today
+        log.warning("Couldn't load the season schedule, so records may include later weeks: %s", exc)
     if big_games:
         try:
             summary.big_games = fetch_big_games(
@@ -88,6 +92,43 @@ def fetch_week(
         except Exception as exc:  # a missing extra shouldn't sink the recap
             log.warning("Couldn't load single-game performances: %s", exc)
     return summary
+
+
+def records_through(schedule: Iterable[dict], week: int) -> dict:
+    """Each team's (wins, losses, ties, points for) from decided matchups in periods 1..week.
+
+    `schedule` is ESPN's raw league schedule (the mMatchup view).
+    """
+    records: dict = {}
+    for game in schedule:
+        if game.get("matchupPeriodId", 0) > week or "away" not in game:
+            continue
+        winner = game.get("winner")
+        if winner not in ("HOME", "AWAY", "TIE"):
+            continue
+        for side, other in (("home", "AWAY"), ("away", "HOME")):
+            tid = game[side]["teamId"]
+            w, l, t, pf = records.get(tid, (0, 0, 0, 0.0))
+            if winner == "TIE":
+                t += 1
+            elif winner == other:
+                l += 1
+            else:
+                w += 1
+            records[tid] = (w, l, t, round(pf + float(game[side].get("totalPoints") or 0), 2))
+    return records
+
+
+def apply_records(summary: WeekSummary, schedule: list) -> None:
+    """Set each team's record as of the summary's week, and the record it took into that week."""
+    now = records_through(schedule, summary.week)
+    before = records_through(schedule, summary.week - 1)
+    for team in summary.teams:
+        if team.team_id is None:
+            continue
+        team.wins, team.losses, team.ties, team.points_for = now.get(team.team_id, (0, 0, 0, 0.0))
+        team.record = f"{team.wins}-{team.losses}-{team.ties}"
+        team.prev_record = before.get(team.team_id, (0, 0, 0, 0.0))
 
 
 def export_path(summary: WeekSummary, directory: Path) -> Path:
@@ -148,6 +189,12 @@ def _team_week(box: Any, side: str, scoring: str) -> Optional[TeamWeek]:
         name=getattr(team, "team_name", "Unknown"),
         abbrev=getattr(team, "team_abbrev", ""),
         record=_record(team),
+        team_id=getattr(team, "team_id", None),
+        logo_url=getattr(team, "logo_url", "") or "",
+        wins=int(getattr(team, "wins", 0) or 0),
+        losses=int(getattr(team, "losses", 0) or 0),
+        ties=int(getattr(team, "ties", 0) or 0),
+        points_for=float(getattr(team, "points_for", 0) or 0),
         starters=starters,
         bench=bench,
     )
