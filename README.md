@@ -150,14 +150,24 @@ There's also a third route that needs no API key at all: export each week's data
 
 To get a fresh summary every Monday without thinking about it, run the export on a server and commit each week to git. `scripts/weekly-export.sh` pulls the repo, runs `python -m fantasy_recap --previous --export summaries`, and commits and pushes the new file.
 
-1. Clone the repo on the server (your own fork, if you're not the owner), set up `.venv` and `.env` as in the [Quickstart](#quickstart), and make sure `git push` works from there. An SSH deploy key with write access is the simplest way.
+> **Privacy:** each summary holds your league's name, team names, rosters and scores, and the script pushes it to your repo's `main` branch. If that repo is public (including a public fork of this one), your league's data is public too. Run the export from a private repo instead.
+
+1. Clone the repo on the server, ideally a private copy of your own, set up `.venv` and `.env` as in the [Quickstart](#quickstart), and make sure `git push` works from there. An SSH deploy key with write access is the simplest way.
 2. Test it once:
 
    ```bash
    ./scripts/weekly-export.sh
    ```
 
-3. Schedule it for Monday at 9am Eastern, after the fantasy week ends Sunday night. With systemd, first edit `User=` and the paths in `deploy/systemd/fantasy-recap-export.service` to match your user and clone, then:
+3. Schedule it for Monday at 9am Eastern, after the fantasy week ends Sunday night. The example files under `deploy/` were written for one particular server, so change them for yours first. In `deploy/systemd/fantasy-recap-export.service`, set these to your user and clone location:
+
+   ```ini
+   User=<your-user>
+   WorkingDirectory=/path/to/fantasy_recap
+   ExecStart=/path/to/fantasy_recap/scripts/weekly-export.sh
+   ```
+
+   Then install the timer:
 
    ```bash
    sudo cp deploy/systemd/fantasy-recap-export.* /etc/systemd/system/
@@ -166,7 +176,14 @@ To get a fresh summary every Monday without thinking about it, run the export on
    systemctl list-timers fantasy-recap-export.timer   # shows the next run
    ```
 
-   Or use cron: edit the paths in `deploy/crontab.example` and add its line with `crontab -e`.
+   Or use cron: run `crontab -e` and add the lines from `deploy/crontab.example` with your own paths:
+
+   ```cron
+   CRON_TZ=America/New_York
+   0 9 * * 1 /path/to/fantasy_recap/scripts/weekly-export.sh >> /path/to/fantasy_recap-export.log 2>&1
+   ```
+
+   Some cron versions, including the one Debian and Ubuntu ship, ignore `CRON_TZ`. On those, write the time in the server's own time zone instead.
 
 Each week lands at `summaries/<season>-week-<NN>.json`, for example `summaries/2027-week-03.json`, and [`summaries/README.md`](summaries/README.md) describes what's in it. The script takes a few environment variables: `EXPORT_ARGS` (default `--previous`; use `EXPORT_ARGS="--week 3"` to redo a week), `BRANCH` (default `main`), `PYTHON` (default `.venv/bin/python`) and `REPO_DIR`.
 
