@@ -36,7 +36,8 @@ def test_espn_config_requires_league_id():
 
 
 def test_story_config_model(monkeypatch):
-    assert StoryConfig.from_env().model == DEFAULT_MODEL
+    assert StoryConfig.from_env().model_for("anthropic") == DEFAULT_MODEL
+    assert StoryConfig.from_env().model_for("claude-code") == DEFAULT_MODEL
     monkeypatch.setenv("FANTASY_RECAP_MODEL", "claude-opus-5-5")
     assert StoryConfig.from_env().model == "claude-opus-5-5"
     assert StoryConfig.from_env(model="x").model == "x"

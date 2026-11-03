@@ -1,7 +1,8 @@
 """Turn a WeekSummary into a 2-3 paragraph recap.
 
-With an Anthropic API key the story is written by Claude from the structured
-summary. Without one (or with --no-ai) a plain template story is used.
+A model writes the story from the structured summary: Claude through the API or the Claude Code CLI,
+Codex, OpenAI, or any OpenAI-compatible server (see providers.py). Without one (or with --no-ai) a
+plain template story is used.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from typing import Any, Optional
 
 from .config import StoryConfig
 from .models import Matchup, TeamWeek, WeekSummary
+from .providers import generate, resolve_provider
 
 _PROMPT_TEMPLATE = """You write weekly recaps for a fantasy {sport} league, in the voice of a trash-talking \
 sports columnist writing for the league's group chat. The goal is to make the managers laugh.
@@ -130,8 +132,9 @@ def write_story(
         return f"No matchups were found for week {summary.week} of {summary.league_name}."
 
     config = config or StoryConfig.from_env()
-    if use_ai and (client is not None or config.api_key):
-        story = ai_story(summary, config, client=client)
+    provider = story_provider(config, use_ai=use_ai, client=client)
+    if provider != "template":
+        story = ai_story(summary, config, client=client, provider=provider)
     else:
         story = template_story(summary)
     award = team_of_the_week(summary) if include_award else ""
@@ -148,24 +151,19 @@ def team_of_the_week(summary: WeekSummary) -> str:
     return f"Team of the Week{so_far}: {team.name} ({score})"
 
 
-def ai_story(summary: WeekSummary, config: StoryConfig, client: Any = None) -> str:
-    if client is None:
-        import anthropic
+def story_provider(config: StoryConfig, use_ai: bool = True, client: Any = None) -> str:
+    """Which backend write_story will use. A test client with no provider set means the Anthropic API."""
+    if not use_ai:
+        return "template"
+    if client is not None and not config.provider:
+        return "anthropic"
+    return resolve_provider(config)
 
-        client = anthropic.Anthropic(api_key=config.api_key)
-    response = client.messages.create(
-        model=config.model,
-        # Thinking tokens count against max_tokens, so this must leave room beyond the ~400-word story.
-        max_tokens=16000,
-        system=system_prompt(summary.sport),
-        messages=[{"role": "user", "content": build_prompt(summary)}],
-    )
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError("The model hit max_tokens before finishing the story.")
-    text = "".join(block.text for block in response.content if block.type == "text").strip()
-    if not text:
-        raise RuntimeError("The model returned an empty story.")
-    return text
+
+def ai_story(summary: WeekSummary, config: StoryConfig, client: Any = None,
+             provider: Optional[str] = None) -> str:
+    return generate(system_prompt(summary.sport), build_prompt(summary), config,
+                    provider=provider or story_provider(config, client=client), client=client)
 
 
 # ---------------------------------------------------------------------------

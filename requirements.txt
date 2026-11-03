@@ -3,3 +3,5 @@ anthropic>=0.40
 python-dotenv>=1.0
 reportlab>=4.0
 svglib>=1.5
+# Optional: only for FANTASY_RECAP_PROVIDER=openai or openai-compatible
+# openai>=1.40
