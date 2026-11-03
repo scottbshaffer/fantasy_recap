@@ -3,7 +3,7 @@
 
     python scripts/sample_recap.py                  # template story, no API key needed
     python scripts/sample_recap.py --pdf sample.pdf # also render the shareable PDF
-    python scripts/sample_recap.py --ai             # have Claude write it (needs ANTHROPIC_API_KEY)
+    python scripts/sample_recap.py --ai             # have your story writer write it (see the README)
 
 Every team, player and stat here is invented. The README's sample recap comes from this script.
 """
@@ -82,7 +82,8 @@ def sample_summary() -> WeekSummary:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--ai", action="store_true", help="have Claude write the story (needs ANTHROPIC_API_KEY)")
+    p.add_argument("--ai", action="store_true",
+                   help="have a model write the story instead of the template (see the README's story writer section)")
     p.add_argument("--pdf", type=Path, metavar="FILE", help="also render the PDF at FILE")
     args = p.parse_args()
     load_dotenv_if_present()

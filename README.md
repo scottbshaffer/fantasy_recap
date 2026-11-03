@@ -6,7 +6,7 @@ fantasy_recap reads a week of matchups from an ESPN fantasy basketball or footba
 
 - Works with head-to-head points and category leagues, public or private
 - Basketball and football
-- Claude writes the story when you give it an API key; a built-in template writes a plainer one when you don't, so it always works
+- The story can come from Claude (with an API key or your Claude Code login), Codex, OpenAI, or any OpenAI-compatible server such as OpenRouter or Ollama; with none set up, a built-in template writes a plainer one, so it always works
 - Weekly JSON export and a ready-made systemd timer for hands-off Monday recaps
 
 <p align="center">
@@ -15,7 +15,7 @@ fantasy_recap reads a week of matchups from an ESPN fantasy basketball or footba
 
 ## Sample recap
 
-This is the built-in template story for a made-up league (every team, player and stat is invented). You can make it yourself with `python scripts/sample_recap.py`, no ESPN league or API key needed. With an API key, Claude writes three or four funnier paragraphs from the same facts.
+This is the built-in template story for a made-up league (every team, player and stat is invented). You can make it yourself with `python scripts/sample_recap.py`, no ESPN league or API key needed. With a [story writer](#choosing-a-story-writer) set up, a model writes three or four funnier paragraphs, with headlines, from the same facts.
 
 ```text
 Team of the Week: Hoop Dreams (1,201)
@@ -62,8 +62,11 @@ Settings come from environment variables, or from a `.env` file in the folder yo
 | `ESPN_YEAR` | no | The season. Picked automatically if blank. Basketball seasons are named by the year they end (2026-27 is `2027`); football seasons by the year they start (the 2026 NFL season is `2026`). |
 | `ESPN_S2` | private leagues | The `espn_s2` cookie from your browser |
 | `ESPN_SWID` | private leagues | The `SWID` cookie from your browser, with or without the braces |
-| `ANTHROPIC_API_KEY` | no | Lets Claude write the story. Get one at [console.anthropic.com](https://console.anthropic.com). |
-| `FANTASY_RECAP_MODEL` | no | Claude model id. Defaults to `claude-sonnet-5-5`. |
+| `FANTASY_RECAP_PROVIDER` | no | Who writes the story: `anthropic`, `claude-code`, `codex`, `openai`, `openai-compatible` or `template`. Blank picks the first one available. |
+| `FANTASY_RECAP_MODEL` | no | Model id for whichever story writer runs |
+| `ANTHROPIC_API_KEY` | no | Lets Claude write the story through the Anthropic API. Get one at [console.anthropic.com](https://console.anthropic.com). |
+
+The other story-writer settings (`OPENAI_API_KEY`, `FANTASY_RECAP_BASE_URL`, `FANTASY_RECAP_API_KEY`, `FANTASY_RECAP_CLAUDE_BIN`, `FANTASY_RECAP_CODEX_BIN`, `FANTASY_RECAP_TIMEOUT`) are covered in [Choosing a story writer](#choosing-a-story-writer) and in `.env.example`.
 
 `.env` is already in `.gitignore`. Keep it out of git: the ESPN cookies work like a password for your ESPN account.
 
@@ -97,7 +100,10 @@ python -m fantasy_recap --previous --pdf recaps/week3.pdf
 # A fantasy football league (or set ESPN_SPORT=football in .env)
 python -m fantasy_recap --sport football --previous --pdf recaps/nfl-week9.pdf
 
-# Skip Claude and use the template story
+# Use your Claude Code login to write the story, no API key
+python -m fantasy_recap --previous --provider claude-code
+
+# Skip the model and use the template story
 python -m fantasy_recap --previous --no-ai
 
 # See the structured data the story is written from
@@ -112,8 +118,9 @@ python -m fantasy_recap --week 3 --json
 | `--previous` | Recap the week before the current one |
 | `--sport basketball\|football` | League sport (overrides `ESPN_SPORT`) |
 | `--league-id ID`, `--year YYYY` | Override `ESPN_LEAGUE_ID` and `ESPN_YEAR` |
-| `--model ID` | Claude model to use (overrides `FANTASY_RECAP_MODEL`) |
-| `--no-ai` | Use the template story even if an API key is set |
+| `--provider NAME` | Who writes the story (overrides `FANTASY_RECAP_PROVIDER`; see below) |
+| `--model ID` | Model for the story writer (overrides `FANTASY_RECAP_MODEL`) |
+| `--no-ai` | Use the template story whatever story writer is set up |
 | `--out FILE` | Also write the text output to FILE |
 | `--pdf FILE` | Also render the one-page PDF to FILE |
 | `--team-colors FILE` | JSON file of PDF team colors (see below) |
@@ -137,14 +144,54 @@ Team logos are downloaded from ESPN (with your cookies, for custom logos in priv
 
 ## Choosing a story writer
 
-The story comes from one of these:
+The recap is written by a model from the week's matchup data. You can use Claude through the Anthropic API, your Claude Code login, Codex, the OpenAI API, or any server with an OpenAI-style API (OpenRouter, Ollama, LM Studio and the like). With none of them set up, you still get a plain template story.
 
-- **Claude** (`ANTHROPIC_API_KEY` set): a columnist-style recap with headlines, roasts of bad lineup decisions, and only the facts in the week's data. Each recap is one API call. Pick a different model with `--model` or `FANTASY_RECAP_MODEL`.
-- **The built-in template** (no key, or `--no-ai`): a plainer recap, like the sample above. It needs no network beyond ESPN and costs nothing.
+The easiest options need no API key at all. If you already use Claude Code or Codex on this machine and are signed in, fantasy_recap finds the command and uses your login.
 
-If a Claude call fails for any reason, fantasy_recap prints a note and falls back to the template, so you always get a recap.
+| Provider | What you need |
+| --- | --- |
+| `claude-code` | Claude Code installed and signed in (`claude auth login`, or `/login` inside Claude Code). No key. |
+| `codex` | Codex CLI installed and signed in (`codex login`). No key. Codex reads `CODEX_API_KEY`, not `OPENAI_API_KEY`, if you'd rather use a key. |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `OPENAI_API_KEY` and `pip install openai` |
+| `openai-compatible` | `FANTASY_RECAP_BASE_URL`, `FANTASY_RECAP_MODEL`, a key in `FANTASY_RECAP_API_KEY` if the server needs one, and `pip install openai` |
+| `template` | Nothing. No model, just the built-in template. |
 
-There's also a third route that needs no API key at all: export each week's data to a git repo and let Claude in the Claude app write the story from it on a schedule. See [Scheduling](#scheduling).
+Pick one with `FANTASY_RECAP_PROVIDER` in `.env` or `--provider` on the command line. Leave it unset and fantasy_recap uses the first one it finds, in this order: `FANTASY_RECAP_BASE_URL`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the `claude` command, the `codex` command, then the template. `--no-ai` always uses the template.
+
+```bash
+python -m fantasy_recap --provider claude-code
+python -m fantasy_recap --provider codex
+```
+
+`FANTASY_RECAP_MODEL` (or `--model`) sets the model for whichever provider runs. The defaults are `claude-sonnet-5-5` for `anthropic` and `claude-code`, `gpt-6.1-terra` for `openai`, and Codex's own default for `codex`. `openai-compatible` has no default, because it depends on the server.
+
+Examples for an OpenAI-compatible server:
+
+```bash
+# OpenRouter
+FANTASY_RECAP_BASE_URL=https://openrouter.ai/api/v1
+FANTASY_RECAP_API_KEY=sk-or-...
+FANTASY_RECAP_MODEL=anthropic/claude-sonnet-5.5
+
+# Ollama on this machine
+FANTASY_RECAP_BASE_URL=http://localhost:11434/v1
+FANTASY_RECAP_MODEL=llama3.1
+```
+
+Your `OPENAI_API_KEY` is never sent to a custom base URL. Use `FANTASY_RECAP_API_KEY` for that server's key.
+
+If the model fails for any reason (not signed in, a timeout, an API error), fantasy_recap prints a note and falls back to the template, so a scheduled run still produces a recap.
+
+A few things to know when running on a schedule with `claude-code` or `codex`:
+
+- cron and systemd often have a short `PATH`. If the command isn't found, set `FANTASY_RECAP_CLAUDE_BIN` or `FANTASY_RECAP_CODEX_BIN` to its full path (`which claude` shows it).
+- The job must run as the same user who signed in, so it can see the login.
+- `FANTASY_RECAP_TIMEOUT` sets how many seconds to wait for the command (default 300).
+- If `ANTHROPIC_API_KEY` is also set, auto-detect picks `anthropic` first. Set `FANTASY_RECAP_PROVIDER=claude-code` to use your Claude Code login instead; the key is then kept away from the `claude` command so it really uses your login.
+- Each recap uses a little of your Claude or ChatGPT plan's usage.
+
+There's also a route that needs no model on your machine at all: export each week's data to a git repo and let Claude in the Claude app write the story from it on a schedule. See [Scheduling](#scheduling).
 
 ## Scheduling
 
@@ -187,7 +234,7 @@ To get a fresh summary every Monday without thinking about it, run the export on
 
 Each week lands at `summaries/<season>-week-<NN>.json`, for example `summaries/2027-week-03.json`, and [`summaries/README.md`](summaries/README.md) describes what's in it. The script takes a few environment variables: `EXPORT_ARGS` (default `--previous`; use `EXPORT_ARGS="--week 3"` to redo a week), `BRANCH` (default `main`), `PYTHON` (default `.venv/bin/python`) and `REPO_DIR`.
 
-If you'd rather get the story or PDF itself on a schedule, point cron or a timer at `python -m fantasy_recap --previous --pdf ...` the same way.
+If you'd rather get the story or PDF itself on a schedule, point cron or a timer at `python -m fantasy_recap --previous --pdf ...` the same way. With `claude-code` or `codex` as the story writer, read the scheduling notes at the end of [Choosing a story writer](#choosing-a-story-writer).
 
 ## Troubleshooting
 
@@ -199,8 +246,9 @@ If you'd rather get the story or PDF itself on a schedule, point cron or a timer
 | `Couldn't load ESPN ... league ... does not exist` | Check the league ID and the season year. The error suggests the right year when it looks off; clearing `ESPN_YEAR` lets the tool pick. Also check `ESPN_SPORT` matches the league. |
 | `Week N hasn't started yet` | ESPN's matchup period numbers can differ from the calendar week. Check the number on your league's scoreboard. |
 | `There's no finished week to recap yet` | `--previous` in week 1. Run without it for a "so far" recap. |
-| `note: ANTHROPIC_API_KEY isn't set, using the template story` | Expected without a key. Add one to `.env` if you want Claude to write it. |
-| `note: Claude couldn't write the story (...)` | The API call failed (bad key, no credit, unknown model, network). The message says why; you still get the template story. |
+| `note: no story writer found, using the template story` | Expected when nothing is set up. See [Choosing a story writer](#choosing-a-story-writer). |
+| `note: ... couldn't write the story (...)` | The story writer failed (bad key, not signed in, unknown model, a timeout, network). The message says why; you still get the template story. |
+| The `claude` or `codex` command works in your shell but not under cron or systemd | The scheduled job has a shorter `PATH`, or runs as a different user. Set `FANTASY_RECAP_CLAUDE_BIN` or `FANTASY_RECAP_CODEX_BIN` to the full path from `which claude`, and run the job as the user who signed in. |
 | `note: Couldn't load single-game performances` | ESPN didn't return the daily box scores. The recap still works without them; `--big-games 0` skips that step. |
 | Initials instead of team logos in the PDF | The logo couldn't be downloaded or read. Custom logos in private leagues need the cookies. |
 
@@ -215,7 +263,8 @@ The code is small:
 - `fantasy_recap/espn.py` reads the league with [espn-api](https://github.com/cwendt94/espn-api) and builds a `WeekSummary`
 - `fantasy_recap/games.py` and `fantasy_recap/football.py` find the week's best single games
 - `fantasy_recap/models.py` holds the summary data classes and the highlight logic
-- `fantasy_recap/story.py` has the Claude prompt and the template story
+- `fantasy_recap/story.py` has the story prompt and the template story
+- `fantasy_recap/providers.py` runs each story writer (Anthropic, Claude Code, Codex, OpenAI and OpenAI-compatible)
 - `fantasy_recap/pdf.py` renders the one-page PDF
 - `fantasy_recap/cli.py` is the command line tool
 
@@ -230,7 +279,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The tests use fake ESPN data and a fake Claude client, so they need no network or credentials. Please add a test with any change in behavior.
+The tests use fake ESPN data and fake story writers, so they need no network or credentials. Please add a test with any change in behavior.
 
 ## License
 
