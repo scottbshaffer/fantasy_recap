@@ -9,7 +9,8 @@ from fantasy_recap.espn import summarize_box_scores
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    for key in ("ESPN_LEAGUE_ID", "ESPN_YEAR", "ESPN_S2", "ESPN_SWID", "ANTHROPIC_API_KEY", "FANTASY_RECAP_MODEL"):
+    for key in ("ESPN_LEAGUE_ID", "ESPN_YEAR", "ESPN_SPORT", "ESPN_S2", "ESPN_SWID", "ANTHROPIC_API_KEY",
+                "FANTASY_RECAP_MODEL"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(cli, "load_dotenv_if_present", lambda: None)
 
@@ -118,3 +119,45 @@ def test_cli_pdf_rejects_json(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         cli.main(["--json", "--pdf", "x.pdf"])
     assert "--pdf" in capsys.readouterr().err
+
+
+def test_default_season_football():
+    assert default_season(date(2026, 11, 2), sport="football") == 2026
+    assert default_season(date(2027, 1, 15), sport="football") == 2026
+    assert default_season(date(2027, 8, 1), sport="football") == 2027
+
+
+def test_sport_from_env_and_flag(monkeypatch):
+    monkeypatch.setenv("ESPN_LEAGUE_ID", "1")
+    monkeypatch.setenv("ESPN_SPORT", "Football")
+    assert EspnConfig.from_env().sport == "football"
+    assert EspnConfig.from_env(sport="basketball").sport == "basketball"
+    monkeypatch.setenv("ESPN_SPORT", "hockey")
+    with pytest.raises(ValueError, match="ESPN_SPORT"):
+        EspnConfig.from_env()
+
+
+def test_cli_sport_flag_reaches_config(monkeypatch, capsys, points_box_scores):
+    monkeypatch.setenv("ESPN_LEAGUE_ID", "1")
+    seen = {}
+
+    def fake_fetch(config, week=None, previous=False, big_games=10):
+        seen["sport"] = config.sport
+        return summarize_box_scores(points_box_scores, "Test League", config.year, 3, "H2H_POINTS")
+
+    monkeypatch.setattr(cli, "fetch_week", fake_fetch)
+    assert cli.main(["--sport", "football", "--no-ai"]) == 0
+    assert seen["sport"] == "football"
+
+
+def test_connect_hints_at_season_year(monkeypatch):
+    import espn_api.football as fb
+    from fantasy_recap.espn import EspnError, connect
+
+    def boom(**kwargs):
+        raise Exception(f"League {kwargs['league_id']} does not exist")
+
+    monkeypatch.setattr(fb, "League", boom)
+    config = EspnConfig(league_id=1536143138, year=default_season(sport="football") + 1, sport="football")
+    with pytest.raises(EspnError, match=r"named by the year they start.*--year"):
+        connect(config)

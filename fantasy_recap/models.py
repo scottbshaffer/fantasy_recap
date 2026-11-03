@@ -23,6 +23,16 @@ class PlayerLine:
         return self.slot in ("BE", "IR")
 
 
+# Football stat keys used in BigGame.stats, in the order a stat line reads.
+FOOTBALL_LINE = (
+    ("PASS_YDS", "pass yds"), ("PASS_TD", "pass TD"), ("INT", "INT"),
+    ("RUSH_YDS", "rush yds"), ("RUSH_TD", "rush TD"),
+    ("REC", "rec"), ("REC_YDS", "rec yds"), ("REC_TD", "rec TD"),
+    ("SACK", "sacks"), ("DEF_INT", "INT"), ("FUM_REC", "fumble rec"), ("DEF_TD", "TD"),
+    ("FG", "FG"), ("XP", "XP"),
+)
+
+
 @dataclass
 class BigGame:
     """One player's single-game box score from the week."""
@@ -39,10 +49,17 @@ class BigGame:
     opponent: str = ""
     date: str = ""  # YYYY-MM-DD, US Eastern
     notes: list[str] = field(default_factory=list)  # e.g. "triple-double", "40-point game"
+    sport: str = "basketball"
 
     def line(self) -> str:
-        """Short box score line, e.g. '42 pts, 12 reb, 10 ast'."""
+        """Short box score line, e.g. '42 pts, 12 reb, 10 ast' or '312 pass yds, 3 pass TD'."""
         parts = []
+        if self.sport == "football":
+            for key, label in FOOTBALL_LINE:
+                value = self.stats.get(key)
+                if value:
+                    parts.append(f"{value:g} {label}")
+            return ", ".join(parts)
         for key, label in (("PTS", "pts"), ("REB", "reb"), ("AST", "ast"), ("STL", "stl"),
                            ("BLK", "blk"), ("3PM", "3pm")):
             value = self.stats.get(key)
@@ -204,6 +221,7 @@ class WeekSummary:
     season: int
     week: int  # ESPN matchup period
     scoring: str  # "points" or "categories"
+    sport: str = "basketball"
     matchups: list[Matchup] = field(default_factory=list)
     big_games: list[BigGame] = field(default_factory=list)  # best single games, best first
 
@@ -353,6 +371,7 @@ class WeekSummary:
 
         result = {
             "league": self.league_name,
+            "sport": self.sport,
             "season": self.season,
             "week": self.week,
             "scoring": self.scoring,

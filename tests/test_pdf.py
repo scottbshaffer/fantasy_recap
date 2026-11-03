@@ -71,3 +71,60 @@ def test_initials():
     assert initials("The Haliban") == "HA"
     assert initials("Johnny 's Scary Team") == "JST"
     assert initials("tingus pingus") == "TP"
+
+
+SYMBOL_SVG = (b'<svg viewBox="0 0 68.4 68.4" xmlns="http://www.w3.org/2000/svg" '
+              b'xmlns:xlink="http://www.w3.org/1999/xlink"><symbol id="a" viewBox="-20.9 -34.2 41.9 68.4">'
+              b'<circle fill="#fff" r="12.3"/></symbol><use height="68.4" width="41.9" x="-20.9" y="-34.2" '
+              b'transform="matrix(1 0 0 1 34.2 34.2)" xlink:href="#a"/></svg>')
+
+
+def test_inline_svg_symbols():
+    from fantasy_recap.pdf import inline_svg_symbols
+
+    out = inline_svg_symbols(SYMBOL_SVG).decode()
+    assert "symbol" not in out and "use" not in out
+    assert 'transform="matrix(1 0 0 1 34.2 34.2) translate(0 0) scale(1 1)"' in out
+    assert "<circle" in out
+    plain = b'<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>'
+    assert inline_svg_symbols(plain) == plain
+
+
+def test_svg_logo_is_downloaded_cached_and_drawn(tmp_path, monkeypatch, points_box_scores):
+    from reportlab.graphics.shapes import Drawing
+    from fantasy_recap import pdf
+
+    calls = []
+    monkeypatch.setattr(pdf, "LOGO_CACHE", tmp_path / "logos")
+    monkeypatch.setattr(pdf, "_download", lambda url, config, timeout: calls.append(url) or SYMBOL_SVG)
+    s = summarize_box_scores(points_box_scores, "Test League", 2027, 3, "H2H_POINTS")
+    s.teams[0].logo_url = "https://g.espncdn.com/lm-static/fba/images/default_logos/20.svg"
+    logos = pdf.fetch_logos(s)
+    assert isinstance(logos[s.teams[0].key], Drawing)
+    pdf.fetch_logos(s)  # second run comes from the cache
+    assert len(calls) == 1
+    assert render_pdf(s, "A recap.", tmp_path / "logo.pdf", logos=logos).exists()
+
+
+def test_espn_cookies_only_go_to_espn(monkeypatch):
+    from types import SimpleNamespace
+    from fantasy_recap import pdf
+
+    sent = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n):
+            return b""
+
+    monkeypatch.setattr(pdf.urllib.request, "urlopen", lambda req, timeout: sent.append(req) or Resp())
+    config = SimpleNamespace(espn_s2="s2", swid="{X}")
+    pdf._download("https://mystique-api.fantasy.espn.com/apis/v1/domains/lm/images/x", config, 1)
+    pdf._download("https://g.espncdn.com/logo.svg", config, 1)
+    pdf._download("https://evil.example/espn.com", config, 1)
+    assert [r.get_header("Cookie") is not None for r in sent] == [True, False, False]

@@ -8,6 +8,7 @@ from datetime import date
 from typing import Optional
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
+SPORTS = ("basketball", "football")
 
 
 def load_dotenv_if_present() -> None:
@@ -19,12 +20,16 @@ def load_dotenv_if_present() -> None:
     load_dotenv()
 
 
-def default_season(today: Optional[date] = None) -> int:
-    """ESPN names an NBA season by the year it ends: 2026-27 is 2027.
+def default_season(today: Optional[date] = None, sport: str = "basketball") -> int:
+    """The ESPN season year that's current (or about to start) on `today`.
 
-    The fantasy season starts in October, so from October on we use next year.
+    ESPN names an NBA season by the year it ends (2026-27 is 2027), and the fantasy season starts
+    in October, so from October on we use next year. An NFL season is named by the year it starts
+    (2026 runs into early 2027), so in January and February we still mean last year's season.
     """
     today = today or date.today()
+    if sport == "football":
+        return today.year if today.month >= 3 else today.year - 1
     return today.year + 1 if today.month >= 10 else today.year
 
 
@@ -34,9 +39,14 @@ class EspnConfig:
     year: int
     espn_s2: Optional[str] = None
     swid: Optional[str] = None
+    sport: str = "basketball"
 
     @classmethod
-    def from_env(cls, league_id: Optional[int] = None, year: Optional[int] = None) -> "EspnConfig":
+    def from_env(cls, league_id: Optional[int] = None, year: Optional[int] = None,
+                 sport: Optional[str] = None) -> "EspnConfig":
+        sport = (sport or os.getenv("ESPN_SPORT") or "basketball").strip().lower()
+        if sport not in SPORTS:
+            raise ValueError(f"ESPN_SPORT must be one of {', '.join(SPORTS)} (got {sport!r}).")
         raw_id = league_id if league_id is not None else os.getenv("ESPN_LEAGUE_ID")
         if not raw_id:
             raise ValueError("Set ESPN_LEAGUE_ID (or pass --league-id). See .env.example.")
@@ -46,9 +56,10 @@ class EspnConfig:
             swid = "{" + swid.strip("{}") + "}"
         return cls(
             league_id=int(raw_id),
-            year=int(raw_year) if raw_year else default_season(),
+            year=int(raw_year) if raw_year else default_season(sport=sport),
             espn_s2=os.getenv("ESPN_S2") or None,
             swid=swid,
+            sport=sport,
         )
 
 

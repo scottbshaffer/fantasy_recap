@@ -23,6 +23,8 @@ from reportlab.lib import colors
 from reportlab.lib.colors import Color
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
+from reportlab.graphics import renderPDF
+from reportlab.graphics.shapes import Drawing
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
@@ -249,11 +251,78 @@ def _download(url: str, config, timeout: float) -> bytes:
         return resp.read(5_000_000)
 
 
-def _logo(url: str, config, timeout: float) -> Optional[ImageReader]:
+_SVG_NS, _XLINK_NS = "http://www.w3.org/2000/svg", "http://www.w3.org/1999/xlink"
+
+
+def inline_svg_symbols(data: bytes) -> bytes:
+    """Replace each <use> of a <symbol> with a plain <g> holding the symbol's content.
+
+    Some of ESPN's default logos are drawn this way, and svglib clips symbols with a negative
+    viewBox origin wrongly. The group gets the same transform the <use> implies.
+    """
+    import copy
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return data
+    symbols = {sym.get("id"): sym for sym in root.iter(f"{{{_SVG_NS}}}symbol")}
+    if not symbols:
+        return data
+    ET.register_namespace("", _SVG_NS)
+    ET.register_namespace("xlink", _XLINK_NS)
+    parents = {child: parent for parent in root.iter() for child in parent}
+    for use in list(root.iter(f"{{{_SVG_NS}}}use")):
+        ref = (use.get(f"{{{_XLINK_NS}}}href") or use.get("href") or "").lstrip("#")
+        sym = symbols.get(ref)
+        if sym is None:
+            continue
+        x, y = float(use.get("x", 0)), float(use.get("y", 0))
+        transform = [use.get("transform", "")]
+        if sym.get("viewBox"):
+            vx, vy, vw, vh = (float(v) for v in sym.get("viewBox").replace(",", " ").split())
+            sx, sy = float(use.get("width", vw)) / vw, float(use.get("height", vh)) / vh
+            transform.append(f"translate({x - vx * sx:g} {y - vy * sy:g}) scale({sx:g} {sy:g})")
+        else:
+            transform.append(f"translate({x:g} {y:g})")
+        group = ET.Element(f"{{{_SVG_NS}}}g", {"transform": " ".join(t for t in transform if t)})
+        group.extend(copy.deepcopy(child) for child in sym)
+        parent = parents[use]
+        parent.insert(list(parent).index(use), group)
+        parent.remove(use)
+    for sym in symbols.values():
+        parents[sym].remove(sym)
+    return ET.tostring(root)
+
+
+def _svg_drawing(path: Path):
+    """Parse an SVG logo into a reportlab Drawing, or None if it can't be read."""
+    try:
+        from svglib.svglib import svg2rlg
+    except ImportError:  # pragma: no cover - optional at runtime
+        log.info("svglib isn't installed, so SVG logos fall back to initials")
+        return None
+    try:
+        raw = path.read_bytes()
+        fixed = inline_svg_symbols(raw)
+        if fixed != raw:
+            path.write_bytes(fixed)
+        drawing = svg2rlg(str(path))
+    except Exception as exc:
+        log.debug("couldn't read SVG logo %s: %s", path, exc)
+        return None
+    return drawing if drawing is not None and drawing.width and drawing.height else None
+
+
+def _logo(url: str, config, timeout: float):
+    """A team logo as an ImageReader (raster) or a Drawing (SVG), cached on disk; None if unusable."""
     stem = LOGO_CACHE / hashlib.sha256(url.encode()).hexdigest()[:24]
-    png, unusable = stem.with_suffix(".png"), stem.with_suffix(".none")
+    png, svg, unusable = stem.with_suffix(".png"), stem.with_suffix(".svg"), stem.with_suffix(".bad")
     if png.exists():
         return ImageReader(str(png))
+    if svg.exists():
+        return _svg_drawing(svg)
     if unusable.exists():
         return None
     from PIL import Image  # reportlab depends on Pillow
@@ -264,10 +333,17 @@ def _logo(url: str, config, timeout: float) -> Optional[ImageReader]:
         log.debug("couldn't download logo %s: %s", url, exc)
         return None
     LOGO_CACHE.mkdir(parents=True, exist_ok=True)
+    if b"<svg" in data[:2048]:  # ESPN's default logos are SVG
+        svg.write_bytes(data)
+        drawing = _svg_drawing(svg)
+        if drawing is None:
+            svg.unlink()
+            unusable.touch()
+        return drawing
     try:
         im = Image.open(io.BytesIO(data))
         im.load()
-    except Exception:  # SVG (ESPN's default logos) or not an image: use initials instead
+    except Exception:  # not an image: use initials instead
         unusable.touch()
         return None
     im = im.convert("RGBA")
@@ -326,7 +402,13 @@ def _draw_badge(c, cx: float, cy: float, d: float, team: TeamWeek, ctx: _Ctx, ri
         clip = c.beginPath()
         clip.circle(cx, cy, r)
         c.clipPath(clip, stroke=0, fill=0)
-        c.drawImage(logo, cx - r, cy - r, d, d, mask="auto")
+        if isinstance(logo, Drawing):  # vector logo, scaled to fill the circle
+            scale = d / max(logo.width, logo.height)
+            c.translate(cx - logo.width * scale / 2, cy - logo.height * scale / 2)
+            c.scale(scale, scale)
+            renderPDF.draw(logo, c, 0, 0)
+        else:
+            c.drawImage(logo, cx - r, cy - r, d, d, mask="auto")
         c.restoreState()
         c.saveState()
         c.setStrokeColor(ring or color)
@@ -434,6 +516,39 @@ def _draw_basketball(c, cx: float, cy: float, r: float) -> None:
     c.circle(cx, cy, r, stroke=1, fill=0)
 
 
+def _draw_football(c, cx: float, cy: float, r: float) -> None:
+    """A football tilted 30 degrees: brown body, white stripes and laces."""
+    c.saveState()
+    c.translate(cx, cy)
+    c.rotate(30)
+    w, h = 2 * r, 1.24 * r
+    body = c.beginPath()
+    body.moveTo(-w / 2, 0)
+    body.curveTo(-w / 4, h / 2 * 1.33, w / 4, h / 2 * 1.33, w / 2, 0)
+    body.curveTo(w / 4, -h / 2 * 1.33, -w / 4, -h / 2 * 1.33, -w / 2, 0)
+    body.close()
+    c.setFillColor(colors.HexColor("#8b4513"))
+    c.setStrokeColor(NAVY)
+    c.setLineWidth(1.6)
+    c.drawPath(body, stroke=1, fill=1)
+    c.setStrokeColor(colors.white)
+    c.setLineWidth(2.2)
+    for x in (-0.62 * r, 0.62 * r):  # end stripes
+        c.line(x, -0.3 * r, x, 0.3 * r)
+    c.setLineWidth(1.6)
+    c.line(-0.3 * r, 0, 0.3 * r, 0)  # laces
+    for i in range(5):
+        x = -0.24 * r + i * 0.12 * r
+        c.line(x, -0.1 * r, x, 0.1 * r)
+    c.restoreState()
+
+
+def _season_label(summary: WeekSummary) -> str:
+    if summary.sport == "football":
+        return f"{summary.season} SEASON"
+    return f"{summary.season - 1}-{str(summary.season)[-2:]} SEASON"
+
+
 def _page_decor(summary: WeekSummary, page_h: float):
     def draw(c, _doc) -> None:
         c.saveState()
@@ -461,10 +576,11 @@ def _page_decor(summary: WeekSummary, page_h: float):
         _draw_text(c, MARGIN, top + 80, summary.league_name.upper(), "Cond-Bold", 10, ORANGE, char_space=1.8)
         _draw_text(c, MARGIN, top + 34, f"WEEK {summary.week} RECAP", "Display", 50, colors.white, char_space=0.5)
         status = "FINAL" if _is_final(summary) else "IN PROGRESS"
-        season = f"{summary.season - 1}-{str(summary.season)[-2:]} SEASON"
-        _draw_text(c, MARGIN, top + 16, f"{season}  •  {status}", "Cond", 9, HEADER_SUB, char_space=1.4)
+        _draw_text(c, MARGIN, top + 16, f"{_season_label(summary)}  •  {status}", "Cond", 9, HEADER_SUB,
+                   char_space=1.4)
 
-        _draw_basketball(c, PAGE_W - MARGIN - 0.4 * inch, top + 0.7 * inch, 0.38 * inch)
+        ball = _draw_football if summary.sport == "football" else _draw_basketball
+        ball(c, PAGE_W - MARGIN - 0.4 * inch, top + 0.7 * inch, 0.38 * inch)
         c.restoreState()
 
     return draw
@@ -911,6 +1027,11 @@ def _recap(parts: StoryParts, ctx: _Ctx) -> list:
 # Game of the week
 
 GOTW_STATS = (("PTS", "PTS"), ("REB", "REB"), ("AST", "AST"), ("STL", "STL"), ("BLK", "BLK"), ("3PM", "3PM"))
+FOOTBALL_GOTW_STATS = (
+    ("PASS_YDS", "PASS YDS"), ("PASS_TD", "PASS TD"), ("INT", "INT"), ("RUSH_YDS", "RUSH YDS"),
+    ("RUSH_TD", "RUSH TD"), ("REC", "REC"), ("REC_YDS", "REC YDS"), ("REC_TD", "REC TD"),
+    ("SACK", "SACKS"), ("DEF_INT", "INT"), ("FUM_REC", "FUM REC"), ("DEF_TD", "TD"), ("FG", "FG"), ("XP", "XP"),
+)
 
 
 class GameOfTheWeek(Flowable):
@@ -919,8 +1040,11 @@ class GameOfTheWeek(Flowable):
     def __init__(self, game: BigGame, ctx: _Ctx):
         super().__init__()
         self.game, self.ctx = game, ctx
-        self.stats = [(label, int(game.stats[key])) for key, label in GOTW_STATS
-                      if game.stats.get(key) is not None and (key in ("PTS", "REB", "AST") or game.stats[key] > 0)]
+        if game.sport == "football":
+            self.stats = [(label, game.stats[key]) for key, label in FOOTBALL_GOTW_STATS if game.stats.get(key)][:5]
+        else:
+            self.stats = [(label, int(game.stats[key])) for key, label in GOTW_STATS
+                          if game.stats.get(key) is not None and (key in ("PTS", "REB", "AST") or game.stats[key] > 0)]
         self.team = next((t for t in ctx.summary.teams if t.name == game.fantasy_team), None)
 
     def _details(self) -> str:
@@ -973,8 +1097,8 @@ class GameOfTheWeek(Flowable):
                 bx = pad + i * (bw + 6)
                 c.setFillColor(NAVY_LIGHT)
                 c.roundRect(bx, y, bw, self.BOX_H, 6, stroke=0, fill=1)
-                _draw_text(c, bx + bw / 2, y + 17, str(value), "Display", 26,
-                           ORANGE if label == "PTS" else colors.white, align="center")
+                _draw_text(c, bx + bw / 2, y + 17, f"{value:g}", "Display", 26,
+                           ORANGE if i == 0 else colors.white, align="center")
                 _draw_text(c, bx + bw / 2, y + 7, label, "Cond-Bold", 7, HEADER_SUB, char_space=1, align="center")
         if self.note_rows:
             y -= 6

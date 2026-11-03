@@ -1,6 +1,6 @@
 # fantasy_recap
 
-Reads a week of matchups from your ESPN fantasy basketball league (lineups, scores, bench points, close games, blowouts) and writes a two to three paragraph story about it.
+Reads a week of matchups from your ESPN fantasy basketball or football league (lineups, scores, bench points, close games, blowouts) and writes a two to three paragraph story about it.
 
 The story is written by Claude when an Anthropic API key is set. Without one, a built-in template writes a plainer recap, so the tool always works.
 
@@ -56,6 +56,10 @@ python -m fantasy_recap --previous --pdf recaps/week3.pdf
 
 # Pick your own team colors (keys are team names or ESPN team ids), or skip ESPN logos
 python -m fantasy_recap --previous --pdf recaps/week3.pdf --team-colors colors.json --no-logos
+
+# A fantasy football league (or set ESPN_SPORT=football in .env).
+# Football seasons are named by the year they start: the 2026 NFL season is --year 2026.
+python -m fantasy_recap --sport football --previous --pdf recaps/nfl-week9.pdf
 
 # Skip Claude and use the template story
 python -m fantasy_recap --no-ai

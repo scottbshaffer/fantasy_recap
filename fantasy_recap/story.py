@@ -14,7 +14,7 @@ from typing import Any, Optional
 from .config import StoryConfig
 from .models import Matchup, TeamWeek, WeekSummary
 
-SYSTEM_PROMPT = """You write weekly recaps for a fantasy basketball league, in the voice of a trash-talking \
+_PROMPT_TEMPLATE = """You write weekly recaps for a fantasy {sport} league, in the voice of a trash-talking \
 sports columnist writing for the league's group chat. The goal is to make the managers laugh.
 
 Tone:
@@ -39,11 +39,32 @@ Jokes and comparisons are fine as long as they don't pass off made-up facts as r
 matchup comes up. No royalty or "champion of the universe" style hype for anyone.
 - Cover every matchup at least briefly. Spend the most words on the closest game and the biggest blowout.
 - Name the week's top player, and needle a manager who left big points on the bench if the data shows one.
-- "big_games" lists the best single-game box scores of the week. Work in the best one or two, with their \
-stat lines, and call out any that were wasted on a fantasy bench (started is false).
-- If a matchup's status is "in_progress", describe who is leading rather than who won.
-- In a category league, talk about category records (for example 6-3) and which categories swung it, not points.
+{big_games}
+- If a matchup's status is "in_progress", describe who is leading rather than who won.{extra}
 - Keep it under about 400 words."""
+
+_SPORT_RULES = {
+    "basketball": {
+        "big_games": '- "big_games" lists the best single-game box scores of the week. Work in the best one or two, '
+                     "with their stat lines, and call out any that were wasted on a fantasy bench (started is false).",
+        "extra": "\n- In a category league, talk about category records (for example 6-3) and which categories "
+                 "swung it, not points.",
+    },
+    "football": {
+        "big_games": '- "big_games" lists the best individual stat lines of the week (each player plays one NFL game). '
+                     "Work in the best one or two, with their stat lines, and call out any that were wasted on a "
+                     "fantasy bench (started is false). Starting a player who scored zero or negative points is "
+                     "prime roast material.",
+        "extra": "",
+    },
+}
+
+
+def system_prompt(sport: str = "basketball") -> str:
+    return _PROMPT_TEMPLATE.format(sport=sport, **_SPORT_RULES.get(sport, _SPORT_RULES["basketball"]))
+
+
+SYSTEM_PROMPT = system_prompt("basketball")
 
 
 @dataclass
@@ -136,7 +157,7 @@ def ai_story(summary: WeekSummary, config: StoryConfig, client: Any = None) -> s
         model=config.model,
         # Thinking tokens count against max_tokens, so this must leave room beyond the ~400-word story.
         max_tokens=16000,
-        system=SYSTEM_PROMPT,
+        system=system_prompt(summary.sport),
         messages=[{"role": "user", "content": build_prompt(summary)}],
     )
     if response.stop_reason == "max_tokens":
@@ -248,7 +269,9 @@ def template_story(summary: WeekSummary) -> str:
     elif scoring == "points" and summary.top_player and summary.top_player[0].points > 0:
         p, t = summary.top_player
         notes.append(f"The top individual line belonged to {p.name}, who put up {_fmt(p.points)} for {t.name}.")
-    if best and scoring == "points" and summary.top_player and summary.top_player[0].points > 0:
+    # In football the best stat line is the whole week, so the weekly leader would just repeat it.
+    if best and summary.sport != "football" and scoring == "points" and summary.top_player \
+            and summary.top_player[0].points > 0:
         p, t = summary.top_player
         notes.append(f"Over the whole week, {p.name} led everyone with {_fmt(p.points)} fantasy points for {t.name}.")
     if summary.scoring == "points" and summary.most_bench_points:

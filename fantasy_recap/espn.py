@@ -1,4 +1,4 @@
-"""Read a week of matchups from an ESPN fantasy basketball league.
+"""Read a week of matchups from an ESPN fantasy basketball or football league.
 
 `fetch_week` talks to ESPN through the espn-api package. `summarize_box_scores`
 turns espn-api box score objects into our own `WeekSummary`, and only relies on
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from .config import EspnConfig
+from .football import big_games_from_box_scores
 from .games import fetch_big_games
 from .models import Matchup, PlayerLine, TeamWeek, WeekSummary
 
@@ -26,9 +27,12 @@ class EspnError(RuntimeError):
 
 
 def connect(config: EspnConfig):
-    """Return an espn_api basketball League for the given config."""
+    """Return an espn_api League (basketball or football) for the given config."""
     try:
-        from espn_api.basketball import League
+        if config.sport == "football":
+            from espn_api.football import League
+        else:
+            from espn_api.basketball import League
     except ImportError as exc:  # pragma: no cover - dependency missing
         raise EspnError("The espn-api package is not installed. Run: pip install -r requirements.txt") from exc
 
@@ -43,7 +47,18 @@ def connect(config: EspnConfig):
         hint = ""
         if not (config.espn_s2 and config.swid):
             hint = " If the league is private, set ESPN_S2 and ESPN_SWID (see README)."
-        raise EspnError(f"Couldn't load ESPN league {config.league_id} for {config.year}: {exc}.{hint}") from exc
+        if "does not exist" in str(exc):
+            from .config import default_season
+
+            expected = default_season(sport=config.sport)
+            if config.year != expected:
+                naming = ("football seasons are named by the year they start" if config.sport == "football"
+                          else "basketball seasons are named by the year they end")
+                hint += (f" ESPN {naming}, so the current season is {expected}: try --year {expected}"
+                         " or clear ESPN_YEAR.")
+        raise EspnError(
+            f"Couldn't load ESPN {config.sport} league {config.league_id} for {config.year}: {exc}.{hint}"
+        ) from exc
 
 
 def fetch_week(
@@ -71,7 +86,11 @@ def fetch_week(
     if week is None or week < 1:
         raise EspnError("There's no finished week to recap yet.")
 
-    box_scores = league.box_scores(matchup_period=week, matchup_total=True)
+    football = config.sport == "football"
+    if football:  # a football week is one scoring period, which lines up with the matchup in the regular season
+        box_scores = league.box_scores(week=week)
+    else:
+        box_scores = league.box_scores(matchup_period=week, matchup_total=True)
     settings = getattr(league, "settings", None)
     summary = summarize_box_scores(
         box_scores,
@@ -79,12 +98,17 @@ def fetch_week(
         season=config.year,
         week=week,
         scoring_type=getattr(settings, "scoring_type", None),
+        sport=config.sport,
+        # football box scores don't say who won; until the schedule says otherwise, past weeks are final
+        default_status="final" if current is not None and week < current else "in_progress",
     )
     try:
         apply_records(summary, league.espn_request.league_get(params={"view": "mMatchup"})["schedule"])
     except Exception as exc:  # fall back to the records ESPN reports today
         log.warning("Couldn't load the season schedule, so records may include later weeks: %s", exc)
-    if big_games:
+    if big_games and football:
+        summary.big_games = big_games_from_box_scores(box_scores, week, limit=big_games)
+    elif big_games:
         try:
             summary.big_games = fetch_big_games(
                 league, week, use_fantasy_points=summary.scoring == "points", limit=big_games
@@ -120,7 +144,16 @@ def records_through(schedule: Iterable[dict], week: int) -> dict:
 
 
 def apply_records(summary: WeekSummary, schedule: list) -> None:
-    """Set each team's record as of the summary's week, and the record it took into that week."""
+    """Set each team's record as of the summary's week, the record it took into that week, and
+    each matchup's final/in-progress status."""
+    winners = {
+        frozenset((g["home"]["teamId"], g["away"]["teamId"])): g.get("winner")
+        for g in schedule if g.get("matchupPeriodId") == summary.week and "away" in g
+    }
+    for m in summary.real_matchups:
+        winner = winners.get(frozenset((m.home.team_id, m.away.team_id)))
+        if winner is not None:
+            m.status = "final" if winner in ("HOME", "AWAY", "TIE") else "in_progress"
     now = records_through(schedule, summary.week)
     before = records_through(schedule, summary.week - 1)
     for team in summary.teams:
@@ -220,10 +253,13 @@ def summarize_box_scores(
     season: int,
     week: int,
     scoring_type: Optional[str] = None,
+    sport: str = "basketball",
+    default_status: str = "in_progress",
 ) -> WeekSummary:
+    """`default_status` is used for box scores that don't report a winner (football's don't)."""
     box_scores = list(box_scores)
     scoring = _scoring_kind(scoring_type, box_scores)
-    summary = WeekSummary(league_name=league_name, season=season, week=week, scoring=scoring)
+    summary = WeekSummary(league_name=league_name, season=season, week=week, scoring=scoring, sport=sport)
     for box in box_scores:
         home = _team_week(box, "home", scoring)
         away = _team_week(box, "away", scoring)
@@ -231,7 +267,10 @@ def summarize_box_scores(
             continue
         if home is None:  # put the bye team in the "home" slot
             home, away = away, None
-        winner = getattr(box, "winner", "UNDECIDED")
-        status = "final" if winner in ("HOME", "AWAY", "TIE") else "in_progress"
+        winner = getattr(box, "winner", None)
+        if winner is None:
+            status = default_status
+        else:
+            status = "final" if winner in ("HOME", "AWAY", "TIE") else "in_progress"
         summary.matchups.append(Matchup(home=home, away=away, status=status, scoring=scoring))
     return summary

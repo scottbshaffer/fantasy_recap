@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .config import EspnConfig, StoryConfig, load_dotenv_if_present
+from .config import SPORTS, EspnConfig, StoryConfig, load_dotenv_if_present
 from .espn import EspnError, export_summary, fetch_week
 from .story import parse_story, team_of_the_week, write_story
 
@@ -17,14 +17,17 @@ from .story import parse_story, team_of_the_week, write_story
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="fantasy_recap",
-        description="Write a short story about this week's ESPN fantasy basketball matchups.",
+        description="Write a short story about this week's ESPN fantasy basketball or football matchups.",
     )
     week = p.add_mutually_exclusive_group()
     week.add_argument("--week", type=int, help="ESPN matchup period (defaults to the current week)")
     week.add_argument("--previous", action="store_true",
                       help="use the week before the current one (the week that just ended, when run on a Monday)")
+    p.add_argument("--sport", choices=SPORTS, help="league sport (default: ESPN_SPORT or basketball)")
     p.add_argument("--league-id", type=int, help="overrides ESPN_LEAGUE_ID")
-    p.add_argument("--year", type=int, help="season, named by the year it ends (2026-27 is 2027); overrides ESPN_YEAR")
+    p.add_argument("--year", type=int,
+                   help="season; basketball is named by the year it ends (2026-27 is 2027), football by the year "
+                        "it starts; overrides ESPN_YEAR")
     p.add_argument("--model", help="Claude model id (default: FANTASY_RECAP_MODEL or claude-sonnet-5-5)")
     p.add_argument("--no-ai", action="store_true", help="skip Claude and use the built-in template story")
     p.add_argument("--json", action="store_true", help="print the matchup summary as JSON instead of a story")
@@ -51,7 +54,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     load_dotenv_if_present()
 
     try:
-        espn_config = EspnConfig.from_env(league_id=args.league_id, year=args.year)
+        espn_config = EspnConfig.from_env(league_id=args.league_id, year=args.year, sport=args.sport)
         summary = fetch_week(espn_config, week=args.week, previous=args.previous, big_games=args.big_games)
     except (ValueError, EspnError) as exc:
         print(f"error: {exc}", file=sys.stderr)
