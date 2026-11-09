@@ -285,6 +285,6 @@ The tests use fake ESPN data and fake story writers, so they need no network or 
 
 ## License
 
-No license has been chosen yet, so for now the code is all rights reserved by default. The bundled fonts (Barlow, Bebas Neue and Noto Emoji) are under the SIL Open Font License; see `fantasy_recap/fonts/`.
+fantasy_recap is released under the [MIT License](LICENSE). The bundled fonts (Barlow, Bebas Neue and Noto Emoji) are under the SIL Open Font License; see `fantasy_recap/fonts/`.
 
 fantasy_recap isn't affiliated with or endorsed by ESPN. It reads your league through ESPN's unofficial fantasy API, which can change without notice.
