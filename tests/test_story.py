@@ -11,8 +11,9 @@ from fantasy_recap.story import SYSTEM_PROMPT, build_prompt, team_of_the_week, t
 def test_template_story_points(points_box_scores):
     s = summarize_box_scores(points_box_scores, "Test League", 2027, 3, "H2H_POINTS")
     story = template_story(s)
-    paragraphs = story.split("\n\n")
-    assert 2 <= len(paragraphs) <= 3
+    from fantasy_recap.story import parse_story
+
+    assert 2 <= len(parse_story(story).sections) <= 3
     assert "Dunk Dynasty beat Brick Layers 1012.5 to 1004" in story
     assert "Victor Wembanyama" in story
     assert "Pick and Roll had the week off" in story
@@ -119,3 +120,64 @@ def test_template_story_has_headlines(points_box_scores):
     s = summarize_box_scores(points_box_scores, "Test League", 2027, 3, "H2H_POINTS")
     headlines = [h for h, _ in parse_story(template_story(s)).sections]
     assert len(headlines) >= 2 and all(headlines)
+
+
+def test_parse_story_ignores_self_corrections():
+    from fantasy_recap.story import parse_story
+
+    text = ("## One\nKobe Sanders gave The Haliban -3.0 points. That’s a withdrawal.\n\n"
+            "Pull quote: That is a withdrawal.\n"
+            "Wait — that sentence isn't accurate to my recap; the correct line is below.\n"
+            "Pull quote: That's a withdrawal.")
+    parts = parse_story(text)
+    assert parts.sections == [("One", "Kobe Sanders gave The Haliban -3.0 points. That’s a withdrawal.")]
+    assert parts.pull_quote == "That's a withdrawal."
+    assert "Wait" not in parts.plain()
+
+
+def test_parse_story_drops_made_up_pull_quote():
+    from fantasy_recap.story import parse_story
+
+    assert parse_story("Real sentence.\n\nPull quote: A sentence that isn't there.").pull_quote == ""
+
+
+def test_prompt_forbids_notes():
+    assert "Never add notes, corrections or comments about your own writing" in SYSTEM_PROMPT
+
+
+def test_standings_take_parsed_and_kept_out_of_paragraphs():
+    from fantasy_recap.story import parse_story
+
+    text = ("## One\nA recap line.\n\nStandings take: Dunk Dynasty is 3-0 and smug about it.\n"
+            "Pull quote: A recap line.")
+    parts = parse_story(text)
+    assert parts.sections == [("One", "A recap line.")]
+    assert parts.standings_take == "Dunk Dynasty is 3-0 and smug about it."
+    assert parts.pull_quote == "A recap line."
+    assert parts.plain().endswith("\n\nStandings take: Dunk Dynasty is 3-0 and smug about it.")
+
+
+def test_template_standings_take(points_box_scores):
+    from fantasy_recap.espn import apply_records
+    from fantasy_recap.story import parse_story, standings_take
+
+    schedule = [
+        {"matchupPeriodId": 1, "winner": "AWAY", "home": {"teamId": 1, "totalPoints": 900},
+         "away": {"teamId": 2, "totalPoints": 950}},
+        {"matchupPeriodId": 1, "winner": "HOME", "home": {"teamId": 3, "totalPoints": 800},
+         "away": {"teamId": 4, "totalPoints": 700}},
+        {"matchupPeriodId": 2, "winner": "HOME", "home": {"teamId": 1, "totalPoints": 1012.5},
+         "away": {"teamId": 2, "totalPoints": 1004}},
+        {"matchupPeriodId": 2, "winner": "HOME", "home": {"teamId": 3, "totalPoints": 1201},
+         "away": {"teamId": 4, "totalPoints": 803.25}},
+    ]
+    s = summarize_box_scores(points_box_scores, "Test League", 2027, 2, "H2H_POINTS")
+    apply_records(s, schedule)
+    take = standings_take(s)
+    assert take.startswith("Hoop Dreams sits alone on top at 2-0.")
+    assert "made the biggest jump" in take and "took the biggest tumble" in take
+    assert parse_story(template_story(s)).standings_take == take
+
+
+def test_prompt_asks_for_standings_take():
+    assert '"Standings take: "' in SYSTEM_PROMPT
