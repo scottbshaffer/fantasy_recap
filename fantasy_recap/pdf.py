@@ -180,6 +180,7 @@ STANDING_CELL = _style("standing_cell", fontName="Cond", fontSize=9, leading=10.
 STANDING_HEAD = _style("standing_head", fontName="Cond-Bold", fontSize=7, leading=8.5, textColor=MUTED)
 GOTW_DETAIL = _style("gotw_detail", fontSize=9, leading=12, textColor=HEADER_SUB)
 BYE = _style("bye", fontSize=8.5, leading=11, textColor=MUTED)
+TAKE = _style("take", fontName="Body-Italic", fontSize=11, leading=15.5, textColor=NAVY)
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -915,7 +916,26 @@ class Movement(Flowable):
         _draw_text(c, 11, 1.6, str(abs(self.delta)), "Cond-Bold", 8, GREEN if up else RED)
 
 
-def _standings(summary: WeekSummary, ctx: _Ctx) -> list:
+def _standings_take(take: str, ctx: _Ctx) -> list:
+    label = Paragraph(_rich("\U0001F4CA THE TAKE"), _style("take_label", fontName="Cond-Bold", fontSize=8, leading=10,
+                                                       textColor=ORANGE_DARK))
+    para = Paragraph(_story_markup(take, ctx), TAKE)
+    box = Table([[label], [para]], colWidths=[CONTENT_W])
+    box.setStyle(TableStyle([
+        ("FONT", (0, 0), (-1, -1), "Body", 9),
+        ("BACKGROUND", (0, 0), (-1, -1), _tint(ORANGE, 0.9)),
+        ("ROUNDEDCORNERS", [7, 7, 7, 7]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ("TOPPADDING", (0, 0), (0, 0), 9),
+        ("TOPPADDING", (0, 1), (0, 1), 3),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 0),
+        ("BOTTOMPADDING", (0, 1), (0, 1), 10),
+    ]))
+    return [box, Spacer(1, 8)]
+
+
+def _standings(summary: WeekSummary, ctx: _Ctx, take: str = "") -> list:
     table = summary.standings
     if not table:
         return []
@@ -962,7 +982,7 @@ def _standings(summary: WeekSummary, ctx: _Ctx) -> list:
     for i in range(2, len(rows), 2):
         styles.append(("BACKGROUND", (0, i), (-1, i), colors.HexColor("#fdfcfa")))
     t.setStyle(TableStyle(styles))
-    return [SectionHead("STANDINGS"), t, Spacer(1, 4)]
+    return [SectionHead("STANDINGS"), *(_standings_take(take, ctx) if take else []), t, Spacer(1, 4)]
 
 
 # ---------------------------------------------------------------------------
@@ -1142,7 +1162,7 @@ def render_pdf(
     content += _recap(parts, ctx)
     if summary.big_games:
         content += [Spacer(1, 6), GameOfTheWeek(summary.big_games[0], ctx), Spacer(1, 14)]
-    content += _standings(summary, ctx)
+    content += _standings(summary, ctx, parts.standings_take)
 
     content_h = sum(f.wrap(CONTENT_W, 10**6)[1] + f.getSpaceBefore() + f.getSpaceAfter() for f in content)
     frame_h = content_h + 0.3 * inch  # slack for rounding in reportlab's layout

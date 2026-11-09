@@ -1,7 +1,8 @@
 """Turn a WeekSummary into a 2-3 paragraph recap.
 
-With an Anthropic API key the story is written by Claude from the structured
-summary. Without one (or with --no-ai) a plain template story is used.
+A model writes the story from the structured summary: Claude through the API or the Claude Code CLI,
+Codex, OpenAI, or any OpenAI-compatible server (see providers.py). Without one (or with --no-ai) a
+plain template story is used.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from typing import Any, Optional
 
 from .config import StoryConfig
 from .models import Matchup, TeamWeek, WeekSummary
+from .providers import generate, resolve_provider
 
 _PROMPT_TEMPLATE = """You write weekly recaps for a fantasy {sport} league, in the voice of a trash-talking \
 sports columnist writing for the league's group chat. The goal is to make the managers laugh.
@@ -29,9 +31,14 @@ Rules:
 headline lines below.
 - Put a short, punchy headline (two to six words) on its own line above each paragraph, written as \
 "## Headline".
-- After the last paragraph, add one final line: "Pull quote: " followed by the single funniest sentence \
-from your recap, copied word for word.
+- After the last paragraph, add a line starting "Standings take: " with one or two funny sentences about \
+the league table in "standings": who's on top, who climbed or fell the most ("places_moved"), who's stuck \
+at the bottom. Use only the standings data for it.
+- Then add one final line: "Pull quote: " followed by the single funniest sentence from your recap \
+paragraphs, copied word for word.
 - Write every team name exactly as it appears in the data, including its spelling and capitalization.
+- Output only the finished recap. Never add notes, corrections or comments about your own writing; if \
+something needs fixing, fix it before you answer.
 - Use only the facts in the data you are given. Never invent players, stats, injuries, trades or quotes. \
 Jokes and comparisons are fine as long as they don't pass off made-up facts as real.
 - The recap is printed under a "Team of the Week" award line naming the highest scoring team \
@@ -69,23 +76,36 @@ SYSTEM_PROMPT = system_prompt("basketball")
 
 @dataclass
 class StoryParts:
-    """A recap split into (headline, paragraph) sections plus an optional pull quote."""
+    """A recap split into (headline, paragraph) sections, plus an optional pull quote and standings take."""
 
     sections: list[tuple[str, str]] = field(default_factory=list)  # headline may be ""
     pull_quote: str = ""
+    standings_take: str = ""
 
     def plain(self) -> str:
         """The recap as plain text for the terminal and group chat (headlines kept, quote dropped)."""
-        return "\n\n".join(f"{h}\n{p}" if h else p for h, p in self.sections)
+        text = "\n\n".join(f"{h}\n{p}" if h else p for h, p in self.sections)
+        return f"{text}\n\nStandings take: {self.standings_take}" if self.standings_take else text
 
 
 _QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019 "
 
 
+def _normalize(text: str) -> str:
+    text = text.translate(str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                                         "\u2013": "-", "\u2014": "-"}))
+    return " ".join(text.split()).casefold()
+
+
 def parse_story(text: str) -> StoryParts:
-    """Split a recap written with '## Headline' lines and a trailing 'Pull quote:' line."""
+    """Split a recap written with '## Headline' lines and a trailing 'Pull quote:' line.
+
+    Everything after the first 'Pull quote:' line is treated as the model's sign-off, never as
+    recap text, and a pull quote is only kept if it's really a sentence from the recap.
+    """
     parts = StoryParts()
     headline, para = "", []
+    quotes: list[str] = []
 
     def flush():
         nonlocal headline, para
@@ -96,9 +116,15 @@ def parse_story(text: str) -> StoryParts:
     for raw in text.splitlines():
         line = raw.strip()
         quote = re.match(r"(?i)^\**pull quote\**\s*:\s*(.+)$", line)
-        if quote:
+        take = re.match(r"(?i)^\**standings take\**\s*:\s*\**\s*(.+)$", line)
+        if take:
             flush()
-            parts.pull_quote = quote.group(1).strip(_QUOTE_CHARS + "*")
+            parts.standings_take = take.group(1).strip()
+        elif quote:
+            flush()
+            quotes.append(quote.group(1).strip(_QUOTE_CHARS + "*"))
+        elif quotes:
+            continue  # notes or corrections after the pull quote aren't part of the recap
         elif line.startswith("#"):
             flush()
             headline = line.lstrip("#").strip().strip("*")
@@ -107,6 +133,10 @@ def parse_story(text: str) -> StoryParts:
         else:
             para.append(line)
     flush()
+
+    body = _normalize(" ".join(p for _, p in parts.sections))
+    # If the model corrected itself, the later quote is the one it meant.
+    parts.pull_quote = next((q for q in reversed(quotes) if q and _normalize(q) in body), "")
     return parts
 
 
@@ -130,8 +160,9 @@ def write_story(
         return f"No matchups were found for week {summary.week} of {summary.league_name}."
 
     config = config or StoryConfig.from_env()
-    if use_ai and (client is not None or config.api_key):
-        story = ai_story(summary, config, client=client)
+    provider = story_provider(config, use_ai=use_ai, client=client)
+    if provider != "template":
+        story = ai_story(summary, config, client=client, provider=provider)
     else:
         story = template_story(summary)
     award = team_of_the_week(summary) if include_award else ""
@@ -148,24 +179,19 @@ def team_of_the_week(summary: WeekSummary) -> str:
     return f"Team of the Week{so_far}: {team.name} ({score})"
 
 
-def ai_story(summary: WeekSummary, config: StoryConfig, client: Any = None) -> str:
-    if client is None:
-        import anthropic
+def story_provider(config: StoryConfig, use_ai: bool = True, client: Any = None) -> str:
+    """Which backend write_story will use. A test client with no provider set means the Anthropic API."""
+    if not use_ai:
+        return "template"
+    if client is not None and not config.provider:
+        return "anthropic"
+    return resolve_provider(config)
 
-        client = anthropic.Anthropic(api_key=config.api_key)
-    response = client.messages.create(
-        model=config.model,
-        # Thinking tokens count against max_tokens, so this must leave room beyond the ~400-word story.
-        max_tokens=16000,
-        system=system_prompt(summary.sport),
-        messages=[{"role": "user", "content": build_prompt(summary)}],
-    )
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError("The model hit max_tokens before finishing the story.")
-    text = "".join(block.text for block in response.content if block.type == "text").strip()
-    if not text:
-        raise RuntimeError("The model returned an empty story.")
-    return text
+
+def ai_story(summary: WeekSummary, config: StoryConfig, client: Any = None,
+             provider: Optional[str] = None) -> str:
+    return generate(system_prompt(summary.sport), build_prompt(summary), config,
+                    provider=provider or story_provider(config, client=client), client=client)
 
 
 # ---------------------------------------------------------------------------
@@ -286,4 +312,40 @@ def template_story(summary: WeekSummary) -> str:
     if notes:
         paragraphs.append("## Stars and scrubs\n" + " ".join(notes))
 
-    return "\n\n".join(paragraphs[:4])
+    story = "\n\n".join(paragraphs[:4])
+    take = standings_take(summary)
+    return f"{story}\n\nStandings take: {take}" if take else story
+
+
+_COUNT_WORDS = {2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine",
+                10: "Ten", 11: "Eleven", 12: "Twelve"}
+
+
+def standings_take(summary: WeekSummary) -> str:
+    """A plain, factual standings line for the template story."""
+    table = summary.standings
+    if not table:
+        return ""
+    lines = []
+    best = table[0].team
+    tied = [r for r in table if (r.team.wins, r.team.losses, r.team.ties) == (best.wins, best.losses, best.ties)]
+    if len(tied) == 1:
+        lines.append(f"{best.name} sits alone on top at {best.short_record}.")
+    else:
+        count = _COUNT_WORDS.get(len(tied), str(len(tied)))
+        lines.append(f"{count} teams share the best record at {best.short_record}, "
+                     f"with {best.name} on top on points.")
+    moved = [r for r in table if r.prev_rank is not None]
+    if moved:
+        up = max(moved, key=lambda r: r.movement)
+        down = min(moved, key=lambda r: r.movement)
+        if up.movement > 0:
+            spots = "spot" if up.movement == 1 else "spots"
+            lines.append(f"{up.team.name} made the biggest jump, up {up.movement} {spots} to No. {up.rank}.")
+        if down.movement < 0:
+            spots = "spot" if down.movement == -1 else "spots"
+            lines.append(f"{down.team.name} took the biggest tumble, down {-down.movement} {spots} to No. {down.rank}.")
+    last = table[-1].team
+    if len(table) > 2 and (last.wins, last.losses) != (best.wins, best.losses):
+        lines.append(f"{last.name} brings up the rear at {last.short_record}.")
+    return " ".join(lines)

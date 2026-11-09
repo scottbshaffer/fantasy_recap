@@ -9,9 +9,10 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .config import SPORTS, EspnConfig, StoryConfig, load_dotenv_if_present
+from .config import SPORTS, STORY_PROVIDERS, EspnConfig, StoryConfig, load_dotenv_if_present
 from .espn import EspnError, export_summary, fetch_week
-from .story import parse_story, team_of_the_week, write_story
+from .providers import LABELS
+from .story import parse_story, story_provider, team_of_the_week, write_story
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,8 +29,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--year", type=int,
                    help="season; basketball is named by the year it ends (2026-27 is 2027), football by the year "
                         "it starts; overrides ESPN_YEAR")
-    p.add_argument("--model", help="Claude model id (default: FANTASY_RECAP_MODEL or claude-sonnet-5-5)")
-    p.add_argument("--no-ai", action="store_true", help="skip Claude and use the built-in template story")
+    p.add_argument("--provider", choices=("auto",) + STORY_PROVIDERS,
+                   help="who writes the story (default: FANTASY_RECAP_PROVIDER, or the first one available: "
+                        "FANTASY_RECAP_BASE_URL, ANTHROPIC_API_KEY, OPENAI_API_KEY, the claude CLI, the codex CLI, "
+                        "then the template)")
+    p.add_argument("--model", help="model id for the story writer (default: FANTASY_RECAP_MODEL, else "
+                                   "claude-sonnet-5-5 for Claude, gpt-6.1-terra for OpenAI, Codex's own default)")
+    p.add_argument("--no-ai", action="store_true", help="skip the model and use the built-in template story")
     p.add_argument("--json", action="store_true", help="print the matchup summary as JSON instead of a story")
     p.add_argument("--export", nargs="?", const=Path("summaries"), type=Path, metavar="DIR",
                    help="write the summary JSON to DIR/<year>-week-<NN>.json (default DIR: summaries) "
@@ -68,13 +74,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.json:
         output = json.dumps(summary.to_dict(), indent=2)
     else:
-        story_config = StoryConfig.from_env(model=args.model)
-        if not args.no_ai and not story_config.api_key:
-            print("note: ANTHROPIC_API_KEY isn't set, using the template story.", file=sys.stderr)
         try:
-            story = write_story(summary, story_config, use_ai=not args.no_ai, include_award=False)
-        except Exception as exc:  # API errors shouldn't leave the user with nothing
-            print(f"note: Claude couldn't write the story ({exc}); using the template.", file=sys.stderr)
+            story_config = StoryConfig.from_env(model=args.model, provider=args.provider)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        provider = story_provider(story_config, use_ai=not args.no_ai)
+        if not args.no_ai and provider == "template" and not story_config.provider:
+            print("note: no story writer found, using the template story. Set ANTHROPIC_API_KEY or "
+                  "OPENAI_API_KEY, install Claude Code or Codex, or see FANTASY_RECAP_PROVIDER in "
+                  ".env.example.", file=sys.stderr)
+        try:
+            story = write_story(summary, story_config, use_ai=provider != "template", include_award=False)
+        except Exception as exc:  # API and CLI errors shouldn't leave the user with nothing
+            print(f"note: {LABELS.get(provider, provider)} couldn't write the story ({exc}); using the template.",
+                  file=sys.stderr)
             story = write_story(summary, story_config, use_ai=False, include_award=False)
         award = team_of_the_week(summary)
         plain = parse_story(story).plain()

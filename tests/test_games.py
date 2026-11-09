@@ -104,7 +104,9 @@ def test_fetch_week_previous_includes_big_games(points_box_scores, tmp_path):
     story = template_story(s)
     assert "The game of the week belonged to Nikola Jokic, who went for 31 pts, 14 reb, 12 ast (triple-double)" in story
     assert "Bench Bomber's 44 pts, 5 reb, 4 ast, 8 3pm night was wasted on Brick Layers' bench" in story
-    assert len(story.split("\n\n")) <= 3
+    from fantasy_recap.story import parse_story
+
+    assert len(parse_story(story).sections) <= 3
 
     path = export_summary(s, tmp_path / "summaries")
     assert path.name == "2027-week-03.json"
