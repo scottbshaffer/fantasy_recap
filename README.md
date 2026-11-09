@@ -28,6 +28,8 @@ Elsewhere, Second Wind beat Cereal Killers 987.5 to 978, behind Pax Delgado (262
 
 Stars and scrubs
 The game of the week belonged to Victor Sol, who went for 41 pts, 15 reb, 6 ast, 5 blk (40-point game) against LAL for Hoop Dreams. Sleeper Pick's 29 pts, 9 reb, 4 ast, 3 stl night was wasted on Brick Layers' bench. Over the whole week, Victor Sol led everyone with 341 fantasy points for Hoop Dreams. Meanwhile Brick Layers left 155 points on the bench, all of it from Sleeper Pick. Ouch.
+
+Standings take: Dunk Dynasty sits alone on top at 3-0. Hoop Dreams made the biggest jump, up 1 spot to No. 2. Cereal Killers took the biggest tumble, down 1 spot to No. 3. Zone Defense brings up the rear at 0-3.
 ```
 
 ## Quickstart
@@ -94,7 +96,7 @@ python -m fantasy_recap --previous
 python -m fantasy_recap --week 3 --out recaps/week3.txt
 
 # Also render the one-page PDF (Team of the Week, stat tiles, scoreboard, recap,
-# Game of the Week and standings)
+# Game of the Week, and standings with a one-line take on the table)
 python -m fantasy_recap --previous --pdf recaps/week3.pdf
 
 # A fantasy football league (or set ESPN_SPORT=football in .env)
@@ -256,7 +258,7 @@ If you'd rather get the story or PDF itself on a schedule, point cron or a timer
 
 For each matchup, fantasy_recap pulls both teams, their records and scores (or category results), every starter's fantasy points, the points left on the bench, and whether the matchup is final. It also goes day by day through the week's box scores to find the best single-game performances by rostered players, noting whether each one was started or wasted on the bench and milestones like a triple-double or a 40-point game.
 
-From that it picks the league highlights (closest game, biggest blowout, high score, top player, most points left on the bench) and hands the whole summary to the story writer, with instructions to cover every matchup and stick to those facts.
+From that it picks the league highlights (closest game, biggest blowout, high score, top player, most points left on the bench) and hands the whole summary to the story writer, with instructions to cover every matchup and stick to those facts. The recap ends with a short take on the standings: who's on top, who climbed or fell the most, and who's stuck at the bottom.
 
 The code is small:
 
