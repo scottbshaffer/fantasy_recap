@@ -63,14 +63,60 @@ class EspnConfig:
         )
 
 
+# Default model per story writer. Codex picks its own default when none is given.
+DEFAULT_MODELS = {
+    "anthropic": DEFAULT_MODEL,
+    "claude-code": DEFAULT_MODEL,
+    "openai": "gpt-6.1-terra",
+    "codex": None,
+    "openai-compatible": None,  # depends entirely on the server, so FANTASY_RECAP_MODEL is required
+}
+STORY_PROVIDERS = ("anthropic", "claude-code", "codex", "openai", "openai-compatible", "template")
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a number of seconds (got {raw!r}).") from None
+
+
 @dataclass
 class StoryConfig:
-    api_key: Optional[str] = None
-    model: str = DEFAULT_MODEL
+    api_key: Optional[str] = None  # Anthropic
+    model: Optional[str] = None  # None means the provider's default (see DEFAULT_MODELS)
+    provider: Optional[str] = None  # None means auto-detect
+    openai_api_key: Optional[str] = None
+    base_url: Optional[str] = None  # any OpenAI-compatible server
+    compatible_api_key: Optional[str] = None  # key for that server, if it needs one
+    claude_bin: str = "claude"
+    codex_bin: str = "codex"
+    timeout: float = 300.0  # seconds to wait for a CLI backend
+
+    def model_for(self, provider: str) -> Optional[str]:
+        return self.model or DEFAULT_MODELS.get(provider)
 
     @classmethod
-    def from_env(cls, model: Optional[str] = None) -> "StoryConfig":
+    def from_env(cls, model: Optional[str] = None, provider: Optional[str] = None) -> "StoryConfig":
+        provider = (provider or os.getenv("FANTASY_RECAP_PROVIDER") or "").strip().lower() or None
+        if provider == "auto":
+            provider = None
+        if provider and provider not in STORY_PROVIDERS:
+            raise ValueError(f"FANTASY_RECAP_PROVIDER must be auto or one of {', '.join(STORY_PROVIDERS)} "
+                             f"(got {provider!r}).")
+        openai_key = os.getenv("OPENAI_API_KEY") or None
         return cls(
             api_key=os.getenv("ANTHROPIC_API_KEY") or None,
-            model=model or os.getenv("FANTASY_RECAP_MODEL") or DEFAULT_MODEL,
+            model=model or os.getenv("FANTASY_RECAP_MODEL") or None,
+            provider=provider,
+            openai_api_key=openai_key,
+            base_url=os.getenv("FANTASY_RECAP_BASE_URL") or None,
+            # Never fall back to OPENAI_API_KEY here: that would send it to whatever server the URL names.
+            compatible_api_key=os.getenv("FANTASY_RECAP_API_KEY") or None,
+            claude_bin=os.getenv("FANTASY_RECAP_CLAUDE_BIN") or "claude",
+            codex_bin=os.getenv("FANTASY_RECAP_CODEX_BIN") or "codex",
+            timeout=_float_env("FANTASY_RECAP_TIMEOUT", 300.0),
         )

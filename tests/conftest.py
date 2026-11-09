@@ -78,3 +78,13 @@ def category_box_scores():
             winner="UNDECIDED",
         )
     ]
+
+
+@pytest.fixture(autouse=True)
+def no_story_writers(monkeypatch):
+    """Keep tests from finding real keys or a real `claude`/`codex` CLI on this machine."""
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "FANTASY_RECAP_PROVIDER", "FANTASY_RECAP_MODEL",
+                "FANTASY_RECAP_BASE_URL", "FANTASY_RECAP_API_KEY", "FANTASY_RECAP_CLAUDE_BIN",
+                "FANTASY_RECAP_CODEX_BIN", "FANTASY_RECAP_TIMEOUT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("fantasy_recap.providers._which", lambda name: None)
